@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "rnmapbox-pins",
+    "slug": "rnmapbox-pins",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "com.kumario.rnmapboxpins",
+    "plugins": [
+      [
+        "@rnmapbox/maps",
+        {
+          "RNMapboxMapsImpl": "mapbox"        
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "MAPBOX_PUBLIC_TOKEN": "pk.eyJ1IjoicHJpbmNla21yMTEiLCJhIjoiY21nd2x5MG9wMTBxbTJzcHRnNGdmNzU3cCJ9.1QM7lkfKpimPT8EREzzv-A"
+    },
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.kumario.rnmapboxpins",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app uses your location to place pins on the map.",
+        "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to add images to your skate spots."
+      }
+    },
+    "android": {
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.kumario.rnmapboxpins"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
