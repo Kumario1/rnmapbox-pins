@@ -94,7 +94,7 @@ export default function LoginScreen({ onLoginSuccess }) {
               <TextInput
                 style={styles.input}
                 placeholder="Email"
-                placeholderTextColor="#999"
+                placeholderTextColor="#a0a0a0"
                 value={email}
                 onChangeText={setEmail}
                 keyboardType="email-address"
@@ -105,7 +105,7 @@ export default function LoginScreen({ onLoginSuccess }) {
               <TextInput
                 style={styles.input}
                 placeholder="Password"
-                placeholderTextColor="#999"
+                placeholderTextColor="#a0a0a0"
                 value={password}
                 onChangeText={setPassword}
                 secureTextEntry
@@ -159,7 +159,7 @@ export default function LoginScreen({ onLoginSuccess }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fafafa',
+    backgroundColor: '#0a0a0f',
   },
   keyboardView: {
     flex: 1,
@@ -167,103 +167,124 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    paddingVertical: 20,
+    paddingVertical: 40,
   },
   content: {
-    padding: 24,
+    paddingHorizontal: 32,
     justifyContent: 'center',
   },
   header: {
     alignItems: 'center',
-    marginBottom: 48,
+    marginBottom: 56,
   },
   logo: {
-    fontSize: 64,
-    marginBottom: 16,
+    fontSize: 72,
+    marginBottom: 24,
+    textShadowColor: 'rgba(255, 255, 255, 0.3)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 8,
   },
   title: {
-    fontSize: 32,
+    fontSize: 36,
     fontWeight: '800',
-    color: '#1c1c1e',
-    marginBottom: 8,
+    color: '#ffffff',
+    marginBottom: 12,
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 16,
-    color: '#666',
+    fontSize: 18,
+    color: '#a0a0a0',
+    fontWeight: '400',
+    textAlign: 'center',
+    lineHeight: 24,
   },
   form: {
-    marginBottom: 24,
+    marginBottom: 32,
   },
   input: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    padding: 20,
     fontSize: 16,
-    marginBottom: 16,
-    borderWidth: 2,
-    borderColor: '#e0e0e0',
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    color: '#ffffff',
+    fontWeight: '500',
   },
   primaryButton: {
-    backgroundColor: '#1c1c1e',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 20,
     alignItems: 'center',
-    marginTop: 8,
+    marginTop: 12,
+    shadowColor: '#ffffff',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 8,
   },
   primaryButtonText: {
-    color: '#fff',
-    fontSize: 16,
+    color: '#0a0a0f',
+    fontSize: 17,
     fontWeight: '700',
+    letterSpacing: 0.5,
   },
   switchText: {
     textAlign: 'center',
-    color: '#007AFF',
-    fontSize: 14,
-    marginTop: 16,
+    color: '#ffffff',
+    fontSize: 15,
+    marginTop: 20,
+    fontWeight: '500',
+    opacity: 0.8,
   },
   divider: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginVertical: 24,
+    marginVertical: 32,
   },
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: '#e0e0e0',
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
   },
   dividerText: {
-    marginHorizontal: 16,
-    color: '#999',
+    marginHorizontal: 20,
+    color: '#a0a0a0',
     fontSize: 14,
+    fontWeight: '500',
   },
   oauthButtons: {
-    gap: 12,
+    gap: 16,
   },
   oauthButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fff',
-    borderWidth: 2,
-    borderColor: '#e0e0e0',
-    borderRadius: 12,
-    padding: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 16,
+    padding: 20,
   },
   oauthIcon: {
     fontSize: 20,
-    marginRight: 12,
+    marginRight: 16,
     fontWeight: '700',
+    color: '#ffffff',
   },
   oauthButtonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#1c1c1e',
+    color: '#ffffff',
   },
   demoHint: {
     textAlign: 'center',
-    color: '#999',
-    fontSize: 12,
-    marginTop: 24,
+    color: '#a0a0a0',
+    fontSize: 13,
+    marginTop: 32,
+    fontWeight: '400',
+    opacity: 0.7,
   },
 });
 

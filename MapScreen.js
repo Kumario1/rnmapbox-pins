@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import MapboxGL from '@rnmapbox/maps';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Constants from 'expo-constants';
@@ -19,6 +20,7 @@ import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from './supabase';
 import { evaluateSpot, reEvaluateSpot } from './lib/ratings';
+import locationService from './lib/locationService';
 
 export default function MapScreen({ user, onLogout }) {
   const [pins, setPins] = useState([]);
@@ -28,11 +30,146 @@ export default function MapScreen({ user, onLogout }) {
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [selectedPin, setSelectedPin] = useState(null);
+  const [proximityRadius] = useState(50); // 50 meters
+  const [trackingInterval, setTrackingInterval] = useState(null);
+  const [nearbySpots, setNearbySpots] = useState(new Set());
+  const [devMode] = useState(__DEV__); // Development mode for testing
+  const [manualTrafficLevel, setManualTrafficLevel] = useState(0);
   const [newPinData, setNewPinData] = useState({ name: '', description: '', photos: [] });
   const [currentZoom, setCurrentZoom] = useState(14);
   const [ratingStatus, setRatingStatus] = useState(null); // 'evaluating', 'success', 'pending', 'error'
+  const [heatmapData, setHeatmapData] = useState([]);
+  const [isLocationTracking, setIsLocationTracking] = useState(false);
+  const [liveTrafficData, setLiveTrafficData] = useState(new Map());
+  const [showHeatmap, setShowHeatmap] = useState(true);
   const cameraRef = useRef(null);
   const token = Constants?.expoConfig?.extra?.MAPBOX_PUBLIC_TOKEN || Constants?.manifest?.extra?.MAPBOX_PUBLIC_TOKEN;
+
+  // Traffic color function - defined early to avoid reference issues
+  const getTrafficColor = (trafficLevel) => {
+    switch (trafficLevel) {
+      case 0: return '#22c55e'; // Green - No traffic
+      case 1: return '#84cc16'; // Light green - Low traffic
+      case 2: return '#eab308'; // Yellow - Medium traffic
+      case 3: return '#f97316'; // Orange - High traffic
+      case 4: return '#ef4444'; // Red - Very high traffic
+      case 5: return '#dc2626'; // Dark red - Maximum traffic
+      default: return '#6b7280'; // Gray - Unknown
+    }
+  };
+
+  // MVP: Improved heatmap data generator
+  const generateSimpleHeatmapData = () => {
+    return pins
+      .filter(spot => (spot.current_users || 0) > 0)
+      .map(spot => {
+        const userCount = spot.current_users || 0;
+        // Create multiple points for higher user counts to make heatmap more visible
+        const points = [];
+        const baseIntensity = Math.min(1, userCount / 10); // Scale 0-1 based on user count (max 10 users)
+        
+        // Add main point
+        points.push({
+          type: 'Feature',
+          properties: {
+            id: spot.id,
+            name: spot.name,
+            intensity: baseIntensity,
+            userCount: userCount
+          },
+          geometry: {
+            type: 'Point',
+            coordinates: spot.coordinates
+          }
+        });
+        
+        // Add additional points around the main spot for higher user counts
+        if (userCount > 2) {
+          const additionalPoints = Math.min(userCount - 1, 5); // Max 5 additional points
+          for (let i = 0; i < additionalPoints; i++) {
+            const angle = (i / additionalPoints) * 2 * Math.PI;
+            const distance = 0.0001; // Small offset (~10 meters)
+            const offsetLat = Math.cos(angle) * distance;
+            const offsetLng = Math.sin(angle) * distance;
+            
+            points.push({
+              type: 'Feature',
+              properties: {
+                id: `${spot.id}_${i}`,
+                name: spot.name,
+                intensity: baseIntensity * 0.7, // Slightly lower intensity for offset points
+                userCount: userCount
+              },
+              geometry: {
+                type: 'Point',
+                coordinates: [
+                  spot.coordinates[0] + offsetLng,
+                  spot.coordinates[1] + offsetLat
+                ]
+              }
+            });
+          }
+        }
+        
+        return points;
+      })
+      .flat(); // Flatten the array of arrays
+  };
+
+  // Development function to simulate user presence at a spot
+  const simulateUserPresence = async (spotId, trafficLevel) => {
+    if (!devMode) return;
+    
+    try {
+      console.log(`Setting traffic level ${trafficLevel} for spot ${spotId}`);
+      
+      const { data, error } = await supabase
+        .from('spot_traffic')
+        .upsert({
+          spot_id: spotId,
+          current_users: trafficLevel,
+          peak_users: Math.max(trafficLevel, 0),
+          traffic_level: trafficLevel,
+          last_updated: new Date().toISOString()
+        }, {
+          onConflict: 'spot_id'
+        })
+        .select();
+
+      if (error) {
+        console.error('Error updating traffic:', error);
+        Alert.alert('Error', `Failed to update traffic: ${error.message}`);
+        return;
+      }
+
+      console.log('✅ Traffic updated successfully in database:', data);
+      console.log('📊 Updated record:', data?.[0]);
+      
+      // Update the selected pin immediately for better UX
+      if (selectedPin && selectedPin.id === spotId) {
+        setSelectedPin(prev => ({
+          ...prev,
+          current_users: trafficLevel,
+          traffic_level: trafficLevel,
+          last_updated: new Date().toISOString()
+        }));
+      }
+
+      // Update pins with new traffic data
+      setPins(prevPins => 
+        prevPins.map(pin => 
+          pin.id === spotId 
+            ? { ...pin, current_users: trafficLevel, traffic_level: trafficLevel, last_updated: new Date().toISOString() }
+            : pin
+        )
+      );
+      
+      console.log(`Successfully simulated ${trafficLevel} users at spot ${spotId}`);
+    } catch (error) {
+      console.error('Error simulating user presence:', error);
+      Alert.alert('Error', `Failed to simulate traffic: ${error.message}`);
+    }
+  };
 
   useEffect(() => {
     if (token) {
@@ -44,6 +181,42 @@ export default function MapScreen({ user, onLogout }) {
   useEffect(() => {
     fetchSkateSpots();
   }, []);
+
+  // MVP: Simple location tracking
+  useEffect(() => {
+    const initializeLocation = async () => {
+      try {
+        if (user?.id) {
+          const locationInitialized = await locationService.initialize(user?.id, {
+            updateInterval: 15000, // 15 seconds - less battery drain
+            accuracy: Location.Accuracy.Balanced
+          });
+
+          if (locationInitialized) {
+            await locationService.startTracking();
+            setIsLocationTracking(true);
+            console.log('Location tracking started');
+          }
+        }
+      } catch (error) {
+        console.error('Failed to initialize location:', error);
+      }
+    };
+
+    initializeLocation();
+
+    return () => {
+      locationService.cleanup();
+    };
+  }, [user?.id]);
+
+  // Auto-update heatmap when pins change
+  useEffect(() => {
+    if (pins.length > 0) {
+      const newHeatmapData = generateSimpleHeatmapData();
+      setHeatmapData(newHeatmapData);
+    }
+  }, [pins]);
 
   const fetchSkateSpots = async () => {
     try {
@@ -63,6 +236,12 @@ export default function MapScreen({ user, onLogout }) {
             notes,
             skateability_score,
             created_at
+          ),
+          spot_traffic!left(
+            current_users,
+            peak_users,
+            traffic_level,
+            last_updated
           )
         `)
         .eq('is_public', true)
@@ -85,6 +264,11 @@ export default function MapScreen({ user, onLogout }) {
           ? spot.spot_media.filter(media => media.media_type === 'image').map(media => media.media_url)
           : [];
 
+        // Get traffic data from spot_traffic relation
+        const trafficData = spot.spot_traffic && spot.spot_traffic.length > 0 
+          ? spot.spot_traffic[0] 
+          : null;
+
         return {
           id: spot.id,
           name: spot.name,
@@ -96,7 +280,12 @@ export default function MapScreen({ user, onLogout }) {
           photos: photos,
           created_at: spot.created_at,
           created_by: spot.created_by,
-          latestRating: latestRating
+          latestRating: latestRating,
+          // Traffic data
+          current_users: trafficData?.current_users || 0,
+          peak_users: trafficData?.peak_users || 0,
+          traffic_level: trafficData?.traffic_level || 0,
+          last_updated: trafficData?.last_updated || null
         };
       });
 
@@ -111,15 +300,28 @@ export default function MapScreen({ user, onLogout }) {
   useEffect(() => {
     (async () => {
       try {
+        console.log('📍 Requesting location permission...');
         const { status } = await Location.requestForegroundPermissionsAsync();
+        console.log('📍 Permission status:', status);
+        
         if (status === 'granted') {
-          const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+          console.log('📍 Getting current position...');
+          const pos = await Location.getCurrentPositionAsync({ 
+            accuracy: Location.Accuracy.Balanced, // Changed from High to Balanced for better compatibility
+            timeout: 15000 // Increased timeout
+          });
           const coords = [pos.coords.longitude, pos.coords.latitude];
+          console.log('📍 User location coordinates:', coords);
           setUserLocation(coords);
           setCenter(coords);
+          console.log('📍 User location set successfully');
+        } else {
+          console.log('📍 Location permission denied, status:', status);
+          // Don't set a default location - let user manually request it
         }
       } catch (err) {
-        console.log('Location error:', err);
+        console.log('📍 Location error:', err);
+        // Don't set a default location - let user manually request it
       }
     })();
   }, []);
@@ -416,19 +618,107 @@ export default function MapScreen({ user, onLogout }) {
         style={styles.map} 
         styleURL="mapbox://styles/mapbox/dark-v11"
         onMapIdle={onMapIdle}
+        attributionEnabled={false}
+        logoEnabled={false}
+        compassEnabled={false}
       >
         <MapboxGL.Camera ref={cameraRef} zoomLevel={14} centerCoordinate={center} />
         
-        {/* User location - rendered first so pins appear on top */}
+        {/* User location pin - always visible when location is available */}
         {userLocation && (
-          <MapboxGL.UserLocation 
-            visible={true} 
-            showsUserHeadingIndicator={true}
-            minZoomLevel={1}
-            maxZoomLevel={22}
-          />
+          <MapboxGL.MarkerView
+            id="user-location"
+            coordinate={userLocation}
+            allowOverlapWithPuck={false}
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
+            <View style={styles.userLocationContainer}>
+              <View style={styles.userLocationPin}>
+                <View style={styles.userLocationDot} />
+                <View style={styles.userLocationPulse} />
+              </View>
+              {/* Traffic indicator for user location in dev mode */}
+              {devMode && manualTrafficLevel > 0 && (
+                <View style={[
+                  styles.userTrafficIndicator,
+                  { backgroundColor: getTrafficColor(manualTrafficLevel) }
+                ]}>
+                  <Text style={styles.userTrafficText}>
+                    {manualTrafficLevel}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </MapboxGL.MarkerView>
         )}
         
+        {/* Debug: Show user location status */}
+        {devMode && (
+          <View style={styles.debugLocationInfo}>
+            <Text style={styles.debugLocationText}>
+              User Location: {userLocation ? `${userLocation[1].toFixed(4)}, ${userLocation[0].toFixed(4)}` : 'Not set'}
+            </Text>
+          </View>
+        )}
+        
+        {/* MVP: Improved Heatmap Layer */}
+        {showHeatmap && heatmapData.length > 0 && (
+          <MapboxGL.ShapeSource
+            id="heatmap-source"
+            shape={{
+              type: 'FeatureCollection',
+              features: heatmapData
+            }}
+          >
+            <MapboxGL.HeatmapLayer
+              id="heatmap-layer"
+              sourceID="heatmap-source"
+              style={{
+                heatmapWeight: [
+                  'interpolate',
+                  ['linear'],
+                  ['get', 'intensity'],
+                  0, 0,
+                  0.1, 0.2,
+                  0.3, 0.4,
+                  0.5, 0.6,
+                  0.7, 0.8,
+                  1, 1
+                ],
+                heatmapIntensity: [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  10, 0.3,
+                  12, 0.6,
+                  15, 1
+                ],
+                heatmapColor: [
+                  'interpolate',
+                  ['linear'],
+                  ['heatmap-density'],
+                  0, 'rgba(0, 0, 255, 0)',
+                  0.1, 'rgba(0, 255, 255, 0.3)',
+                  0.2, 'rgba(0, 255, 0, 0.5)',
+                  0.4, 'rgba(255, 255, 0, 0.7)',
+                  0.6, 'rgba(255, 165, 0, 0.8)',
+                  0.8, 'rgba(255, 0, 0, 0.9)',
+                  1, 'rgba(139, 0, 0, 1)'
+                ],
+                heatmapRadius: [
+                  'interpolate',
+                  ['linear'],
+                  ['zoom'],
+                  10, 20,
+                  12, 25,
+                  15, 35
+                ],
+                heatmapOpacity: 0.9
+              }}
+            />
+          </MapboxGL.ShapeSource>
+        )}
+
         {/* Custom image thumbnail pins */}
         {pins.map((pin) => (
           <MapboxGL.MarkerView
@@ -454,6 +744,32 @@ export default function MapScreen({ user, onLogout }) {
                     {pin.name}
                   </Text>
                 </View>
+                 
+                 {/* Enhanced Traffic indicator */}
+                 {(pin.current_users || 0) > 0 && (
+                   <View style={[
+                     styles.trafficIndicator,
+                     { 
+                       backgroundColor: getTrafficColor(pin.traffic_level || 0),
+                       borderWidth: (pin.current_users || 0) > 5 ? 3 : 2,
+                       borderColor: '#fff',
+                       shadowColor: getTrafficColor(pin.traffic_level || 0),
+                       shadowOpacity: 0.8,
+                       shadowRadius: 4
+                     }
+                   ]}>
+                     <Text style={[
+                       styles.trafficIndicatorText,
+                       { 
+                         fontSize: (pin.current_users || 0) > 9 ? 8 : 10,
+                         fontWeight: (pin.current_users || 0) > 5 ? '900' : 'bold'
+                       }
+                     ]}>
+                       {pin.current_users || 0}
+                     </Text>
+                   </View>
+                 )}
+                 
                 {pin.photos && pin.photos.length > 0 ? (
                   <>
                     <View style={styles.markerImageContainer}>
@@ -514,7 +830,58 @@ export default function MapScreen({ user, onLogout }) {
             }}
             activeOpacity={0.7}
           >
+            <Ionicons name="settings-outline" size={20} color="#6b7280" style={styles.dropdownItemIcon} />
             <Text style={styles.dropdownItemText}>Settings</Text>
+            <Ionicons name="chevron-forward" size={16} color="#8e8e93" />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.dropdownItem}
+            onPress={() => {
+              setShowProfileMenu(false);
+              const status = isLocationTracking ? 'Active' : 'Inactive';
+              const userCount = pins.reduce((sum, pin) => sum + (pin.current_users || 0), 0);
+              const activeSpots = pins.filter(pin => (pin.current_users || 0) > 0).length;
+              Alert.alert(
+                'Live Traffic Status', 
+                `Location Tracking: ${status}\nTotal Users: ${userCount}\nActive Spots: ${activeSpots}`
+              );
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="analytics-outline" size={20} color="#6b7280" style={styles.dropdownItemIcon} />
+            <Text style={styles.dropdownItemText}>Live Traffic Status</Text>
+            <View style={[styles.statusIndicator, { backgroundColor: isLocationTracking ? '#10b981' : '#ef4444' }]} />
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.dropdownItem}
+            onPress={async () => {
+              setShowProfileMenu(false);
+              try {
+                const { status } = await Location.requestForegroundPermissionsAsync();
+                if (status === 'granted') {
+                  const pos = await Location.getCurrentPositionAsync({ 
+                    accuracy: Location.Accuracy.Balanced,
+                    timeout: 15000
+                  });
+                  const coords = [pos.coords.longitude, pos.coords.latitude];
+                  setUserLocation(coords);
+                  setCenter(coords);
+                  Alert.alert('Success', 'Your location has been updated!');
+                } else {
+                  Alert.alert('Permission Denied', 'Location permission is required to show your position on the map.');
+                }
+              } catch (error) {
+                console.error('Error updating location:', error);
+                Alert.alert('Error', 'Failed to update location. Please try again.');
+              }
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="location-outline" size={20} color="#6b7280" style={styles.dropdownItemIcon} />
+            <Text style={styles.dropdownItemText}>Update My Location</Text>
+            <Ionicons name="chevron-forward" size={16} color="#8e8e93" />
           </TouchableOpacity>
           
           <TouchableOpacity 
@@ -541,6 +908,134 @@ export default function MapScreen({ user, onLogout }) {
             <Text style={styles.dropdownItemIcon}>→</Text>
             <Text style={[styles.dropdownItemText, styles.dropdownItemTextDanger]}>Log Out</Text>
           </TouchableOpacity>
+          
+          {/* MVP: Simple dev controls */}
+          {devMode && (
+            <>
+              <View style={styles.dropdownDivider} />
+              <View style={styles.devMenuSection}>
+                <Text style={styles.devMenuTitle}>Development Tools</Text>
+                
+                <View style={styles.devButtonGrid}>
+                  <TouchableOpacity
+                    style={[styles.devTestButton, styles.devButtonPrimary]}
+                    onPress={async () => {
+                      setShowProfileMenu(false);
+                      try {
+                        // Add random users to database for random spots
+                        const spotsToUpdate = pins.filter(() => Math.random() > 0.3); // 70% chance each spot gets users
+                        const updates = [];
+                        
+                        for (const spot of spotsToUpdate) {
+                          const userCount = Math.floor(Math.random() * 8) + 1; // 1-8 users
+                          const trafficLevel = Math.min(5, Math.ceil(userCount / 2));
+                          
+                          // Update database
+                          const { data, error } = await supabase
+                            .from('spot_traffic')
+                            .upsert({
+                              spot_id: spot.id,
+                              current_users: userCount,
+                              peak_users: Math.max(userCount, 0),
+                              traffic_level: trafficLevel,
+                              last_updated: new Date().toISOString()
+                            }, {
+                              onConflict: 'spot_id'
+                            })
+                            .select();
+                          
+                          if (!error) {
+                            updates.push({ spotId: spot.id, userCount, trafficLevel });
+                            console.log(`✅ Added ${userCount} users to spot ${spot.id} in database`);
+                            console.log('📊 Updated record:', data?.[0]);
+                          } else {
+                            console.error(`❌ Failed to add users to spot ${spot.id}:`, error);
+                          }
+                        }
+                        
+                        // Update local state
+                        setPins(prevPins => 
+                          prevPins.map(pin => {
+                            const update = updates.find(u => u.spotId === pin.id);
+                            if (update) {
+                              return {
+                                ...pin,
+                                current_users: update.userCount,
+                                traffic_level: update.trafficLevel,
+                                last_updated: new Date().toISOString()
+                              };
+                            }
+                            return pin;
+                          })
+                        );
+                        
+                        Alert.alert('Success', `Added random traffic to ${updates.length} spots!`);
+                      } catch (error) {
+                        console.error('Error adding realistic traffic:', error);
+                        Alert.alert('Error', 'Failed to add realistic traffic');
+                      }
+                    }}
+                  >
+                    <Ionicons name="shuffle" size={16} color="#3b82f6" style={styles.devButtonIcon} />
+                    <Text style={styles.devTestButtonText}>Random Traffic</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.devTestButton, styles.devButtonSecondary]}
+                    onPress={() => {
+                      setShowProfileMenu(false);
+                      // Force set a test user location
+                      const testCoords = [-96.334407, 30.627977]; // College Station, TX
+                      setUserLocation(testCoords);
+                      setCenter(testCoords);
+                      console.log('📍 Test user location set:', testCoords);
+                      Alert.alert('Success', 'Test user location set!');
+                    }}
+                  >
+                    <Ionicons name="location" size={16} color="#6b7280" style={styles.devButtonIcon} />
+                    <Text style={styles.devTestButtonText}>Test Location</Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={[styles.devTestButton, styles.devButtonDanger]}
+                    onPress={async () => {
+                      setShowProfileMenu(false);
+                      try {
+                        // Clear all traffic data
+                        const { error } = await supabase
+                          .from('spot_traffic')
+                          .delete()
+                          .neq('spot_id', '00000000-0000-0000-0000-000000000000'); // Delete all records
+                        
+                        if (!error) {
+                          // Reset all pins to no traffic
+                          setPins(prevPins => 
+                            prevPins.map(pin => ({
+                              ...pin,
+                              current_users: 0,
+                              traffic_level: 0,
+                              last_updated: null
+                            }))
+                          );
+                          console.log('✅ All traffic data cleared from database');
+                          Alert.alert('Success', 'All traffic data cleared!');
+                        } else {
+                          console.error('❌ Failed to clear traffic data:', error);
+                          Alert.alert('Error', 'Failed to clear traffic data');
+                        }
+                      } catch (error) {
+                        console.error('Error clearing traffic:', error);
+                        Alert.alert('Error', 'Failed to clear traffic data');
+                      }
+                    }}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="#dc2626" style={styles.devButtonIcon} />
+                    <Text style={styles.devTestButtonText}>Clear All</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </>
+          )}
         </View>
       )}
 
@@ -552,6 +1047,26 @@ export default function MapScreen({ user, onLogout }) {
           onPress={() => setShowProfileMenu(false)}
         />
       )}
+
+      {/* Heatmap Toggle - Above Zoom Controls */}
+      <TouchableOpacity 
+        style={styles.heatmapToggle}
+        onPress={() => {
+          console.log('Heatmap toggle pressed:', {
+            showHeatmap: !showHeatmap,
+            heatmapDataLength: heatmapData.length,
+            heatmapData: heatmapData
+          });
+          setShowHeatmap(!showHeatmap);
+        }}
+        activeOpacity={0.8}
+      >
+        <Ionicons 
+          name="flame" 
+          size={24} 
+          color={showHeatmap ? '#ff6b35' : '#fff'} 
+        />
+      </TouchableOpacity>
 
       {/* Neon Zoom Controls */}
       <View style={styles.zoomControls}>
@@ -569,7 +1084,7 @@ export default function MapScreen({ user, onLogout }) {
       </View>
 
       <TouchableOpacity onPress={openAddPinModal} style={styles.fab} activeOpacity={0.8}>
-        <Text style={styles.fabText}>📍</Text>
+        <Ionicons name="add" size={24} color="#fff" />
       </TouchableOpacity>
 
       {/* Add Pin Modal */}
@@ -693,37 +1208,79 @@ export default function MapScreen({ user, onLogout }) {
                 )}
 
                 <View style={styles.infoRow}>
-                  <Text style={styles.infoLabel}>Traffic</Text>
+                  <Text style={styles.infoLabel}>Live Traffic</Text>
                   <View style={styles.trafficContainer}>
                     <View style={styles.trafficHeatmap}>
                       {[1, 2, 3, 4, 5].map((level) => {
-                        const trafficLevel = selectedPin?.difficulty_level || 3;
-                        let barColor = '#e0e0e0'; // inactive
-                        
-                        if (level <= trafficLevel) {
-                          if (level <= 2) barColor = '#4CAF50'; // green for low
-                          else if (level <= 3) barColor = '#FF9800'; // orange for medium
-                          else barColor = '#F44336'; // red for high
-                        }
-                        
+                        const isActive = selectedPin?.traffic_level >= level;
                         return (
-                          <View 
-                            key={level} 
+                          <View
+                            key={level}
                             style={[
                               styles.trafficBar,
-                              { backgroundColor: barColor }
-                            ]} 
+                              {
+                                backgroundColor: isActive ? getTrafficColor(level) : '#e0e0e0',
+                                opacity: isActive ? 1 : 0.3,
+                              },
+                            ]}
                           />
                         );
                       })}
                     </View>
-                    <Text style={styles.trafficLabel}>
-                      {selectedPin?.difficulty_level ? 
-                        (selectedPin.difficulty_level <= 2 ? 'Low' : 
-                         selectedPin.difficulty_level <= 3 ? 'Medium' : 'High') : 'Unknown'}
-                    </Text>
+                    <View style={styles.trafficInfo}>
+                      <Text style={styles.trafficLabel}>
+                        {selectedPin?.current_users || 0} users
+                      </Text>
+                      {selectedPin?.last_updated && (
+                        <Text style={styles.trafficTimestamp}>
+                          Updated: {new Date(selectedPin.last_updated).toLocaleTimeString()}
+                        </Text>
+                      )}
+                    </View>
                   </View>
                 </View>
+                
+                {/* Development mode traffic controls */}
+                {devMode && selectedPin && (
+                  <View style={styles.devControls}>
+                    <Text style={styles.devLabel}>Traffic Simulation</Text>
+                    <View style={styles.trafficButtons}>
+                      {[0, 1, 2, 3, 4, 5].map((level) => (
+                        <TouchableOpacity
+                          key={level}
+                          style={[
+                            styles.trafficButton,
+                            { 
+                              backgroundColor: getTrafficColor(level),
+                              borderColor: selectedPin?.traffic_level === level ? '#fff' : 'rgba(255, 255, 255, 0.2)',
+                            }
+                          ]}
+                          onPress={() => simulateUserPresence(selectedPin.id, level)}
+                          activeOpacity={0.8}
+                        >
+                          {level === 0 ? (
+                            <Ionicons 
+                              name="close-circle" 
+                              size={20} 
+                              color="#6b7280" 
+                              style={styles.trafficButtonText}
+                            />
+                          ) : (
+                            <Text style={[
+                              styles.trafficButtonText,
+                              { 
+                                color: '#fff',
+                                fontWeight: selectedPin?.traffic_level === level ? '700' : '600'
+                              }
+                            ]}>
+                              {level}
+                            </Text>
+                          )}
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </View>
+                )}
               </View>
 
               {selectedPin?.description ? (
@@ -863,28 +1420,31 @@ const styles = StyleSheet.create({
   profileButton: {
     position: 'absolute',
     top: 60,
-    right: 16,
+    right: 20,
     zIndex: 1000,
   },
   profileAvatar: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#1c1c1e',
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
-    borderWidth: 2,
-    borderColor: '#fff',
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    backdropFilter: 'blur(20px)',
+    transform: [{ scale: 1.02 }],
   },
   profileAvatarText: {
-    color: '#fff',
-    fontSize: 18,
+    color: '#ffffff',
+    fontSize: 20,
     fontWeight: '700',
+    letterSpacing: 0.5,
   },
   dropdownOverlay: {
     position: 'absolute',
@@ -896,123 +1456,140 @@ const styles = StyleSheet.create({
   },
   dropdownMenu: {
     position: 'absolute',
-    top: 112,
-    right: 16,
-    width: 240,
-    backgroundColor: '#fff',
+    top: 116,
+    right: 20,
+    width: 200,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
     borderRadius: 16,
     shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
+    shadowOpacity: 0.2,
+    shadowRadius: 16,
     shadowOffset: { width: 0, height: 4 },
-    elevation: 8,
+    elevation: 12,
     zIndex: 1001,
     overflow: 'hidden',
+    backdropFilter: 'blur(20px)',
   },
   dropdownHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#fafafa',
+    padding: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(0, 0, 0, 0.08)',
   },
   dropdownAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#1c1c1e',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   dropdownAvatarText: {
-    color: '#fff',
-    fontSize: 20,
+    color: '#ffffff',
+    fontSize: 14,
     fontWeight: '700',
+    letterSpacing: 0.3,
   },
   dropdownUserInfo: {
     flex: 1,
   },
   dropdownUserName: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: '#1c1c1e',
     marginBottom: 2,
+    letterSpacing: -0.1,
   },
   dropdownUserEmail: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#666',
+    fontWeight: '500',
   },
   dropdownDivider: {
     height: 1,
-    backgroundColor: '#e0e0e0',
+    backgroundColor: 'rgba(0, 0, 0, 0.08)',
+    marginHorizontal: 12,
   },
   dropdownItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
-    paddingVertical: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginHorizontal: 6,
+    marginVertical: 1,
+    borderRadius: 8,
   },
   dropdownItemIcon: {
-    fontSize: 18,
-    marginRight: 12,
-    width: 24,
+    marginRight: 10,
+    width: 16,
     textAlign: 'center',
   },
   dropdownItemText: {
-    fontSize: 15,
+    fontSize: 13,
     color: '#1c1c1e',
-    fontWeight: '500',
+    fontWeight: '600',
+    flex: 1,
+    letterSpacing: -0.1,
+  },
+  statusIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginLeft: 8,
   },
   dropdownItemDanger: {
-    backgroundColor: '#fff',
+    backgroundColor: 'rgba(255, 59, 48, 0.08)',
+    marginTop: 4,
   },
   dropdownItemTextDanger: {
     color: '#ff3b30',
+    fontWeight: '700',
   },
   zoomControls: {
     position: 'absolute',
-    bottom: 150,
-    right: 20,
+    top: 120,
+    right: 24,
     flexDirection: 'column',
     backgroundColor: 'transparent',
   },
   neonContainer: {
-    backgroundColor: 'rgba(10, 10, 15, 0.7)',
-    borderRadius: 35,
-    borderWidth: 2.5,
-    borderColor: '#ffffff',
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    shadowColor: '#ffffff',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.4,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    paddingVertical: 4,
+    paddingHorizontal: 3,
+    width: 40,
+    flexDirection: 'column',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
     shadowRadius: 8,
-    elevation: 6,
+    elevation: 8,
+    backdropFilter: 'blur(20px)',
+    transform: [{ scale: 1.02 }],
   },
   neonButton: {
-    width: 40,
-    height: 40,
+    width: 32,
+    height: 32,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'transparent',
   },
   neonButtonText: {
     color: '#ffffff',
-    fontSize: 24,
+    fontSize: 20,
     fontWeight: '300',
-    textShadowColor: '#ffffff',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 4,
+    letterSpacing: -0.5,
   },
   neonDivider: {
-    height: 1.5,
-    backgroundColor: '#ffffff',
-    marginVertical: 8,
+    height: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    marginVertical: 4,
     marginHorizontal: 8,
-    shadowColor: '#ffffff',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
   },
   neonCircle: {
     width: 24,
@@ -1050,49 +1627,48 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
     right: 16,
-    bottom: 70,
-    backgroundColor: 'rgba(10, 10, 15, 0.7)',
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    bottom: 60,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#ffffff',
-    shadowOpacity: 0.5,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
     shadowRadius: 8,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 6,
-    borderWidth: 2.5,
-    borderColor: '#fff',
-  },
-  fabText: {
-    color: '#fff',
-    fontSize: 28,
-    lineHeight: 32,
-    fontWeight: '600',
-    textShadowColor: '#ffffff',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 4,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    backdropFilter: 'blur(20px)',
+    transform: [{ scale: 1.02 }],
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'flex-end',
   },
   modalContent: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    maxHeight: '80%',
-    paddingBottom: 40, // Add extra space at bottom to prevent cutoff
+    backgroundColor: '#ffffff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '85%',
+    paddingBottom: 40,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 20,
+    elevation: 20,
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 20,
     borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+    borderBottomColor: 'rgba(0, 0, 0, 0.08)',
   },
   titleContainer: {
     flexDirection: 'row',
@@ -1100,46 +1676,59 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   modalTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    marginRight: 8,
+    fontSize: 24,
+    fontWeight: '800',
+    marginRight: 12,
+    color: '#1c1c1e',
+    letterSpacing: -0.5,
   },
   verifiedBadge: {
     backgroundColor: '#22c55e',
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#22c55e',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
   },
   verifiedBadgeText: {
     color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
   },
   closeButton: {
-    fontSize: 28,
+    fontSize: 32,
     color: '#666',
+    fontWeight: '300',
   },
   modalBody: {
-    padding: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 20,
   },
   label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
-    marginTop: 12,
-    marginBottom: 6,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1c1c1e',
+    marginTop: 20,
+    marginBottom: 12,
+    letterSpacing: -0.2,
   },
   input: {
     borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    padding: 12,
+    borderColor: 'rgba(0, 0, 0, 0.12)',
+    borderRadius: 12,
+    padding: 16,
     fontSize: 16,
+    backgroundColor: '#fafafa',
+    color: '#1c1c1e',
+    fontWeight: '500',
   },
   textArea: {
-    height: 100,
+    height: 120,
     textAlignVertical: 'top',
   },
   photoScroll: {
@@ -1168,35 +1757,44 @@ const styles = StyleSheet.create({
   },
   modalFooter: {
     flexDirection: 'row',
-    padding: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 20,
     borderTopWidth: 1,
-    borderTopColor: '#e0e0e0',
-    gap: 12,
+    borderTopColor: 'rgba(0, 0, 0, 0.08)',
+    gap: 16,
   },
   cancelButton: {
     flex: 1,
-    padding: 14,
-    borderRadius: 8,
+    padding: 18,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: 'rgba(0, 0, 0, 0.12)',
     alignItems: 'center',
+    backgroundColor: '#fafafa',
   },
   cancelButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
     color: '#666',
+    letterSpacing: 0.2,
   },
   saveButton: {
     flex: 1,
-    padding: 14,
-    borderRadius: 8,
+    padding: 18,
+    borderRadius: 12,
     backgroundColor: '#1c1c1e',
     alignItems: 'center',
+    shadowColor: '#1c1c1e',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 4,
   },
   saveButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 17,
+    fontWeight: '700',
     color: '#fff',
+    letterSpacing: 0.2,
   },
   photoPager: {
     height: 250,
@@ -1363,37 +1961,41 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   markerImageContainer: {
-    borderRadius: 8,
-    borderWidth: 2.5,
-    borderColor: '#fff',
-    padding: 1.5,
-    backgroundColor: '#000',
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: '#ffffff',
+    padding: 2,
+    backgroundColor: 'rgba(0, 0, 0, 0.1)',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.35,
-    shadowRadius: 4,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 8,
   },
   markerImage: {
-    width: 50,
-    height: 50,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: '#000',
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.1)',
   },
   markerPointer: {
     width: 0,
     height: 0,
     backgroundColor: 'transparent',
     borderStyle: 'solid',
-    borderLeftWidth: 7,
-    borderRightWidth: 7,
-    borderTopWidth: 10,
+    borderLeftWidth: 8,
+    borderRightWidth: 8,
+    borderTopWidth: 12,
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
-    borderTopColor: '#fff',
-    marginTop: -2,
+    borderTopColor: '#ffffff',
+    marginTop: -3,
     alignSelf: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
   },
   silhouettePinContainer: {
     marginTop: 4,
@@ -1409,63 +2011,67 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   markerLabel: {
-    marginBottom: 5,
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
+    marginBottom: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    minWidth: 60,
-    maxWidth: 150,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    minWidth: 70,
+    maxWidth: 160,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.3,
-    shadowRadius: 2,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 6,
   },
   markerLabelText: {
-    color: '#fff',
-    fontSize: 11,
+    color: '#ffffff',
+    fontSize: 12,
     fontWeight: '700',
     textAlign: 'center',
     flexWrap: 'wrap',
+    letterSpacing: 0.2,
   },
   // Enhanced Modal Styles
   infoSection: {
-    marginTop: 16,
-    padding: 16,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 12,
+    marginTop: 20,
+    padding: 20,
+    backgroundColor: '#fafafa',
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#e9ecef',
+    borderColor: 'rgba(0, 0, 0, 0.06)',
   },
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 20,
+    fontWeight: '800',
     color: '#1c1c1e',
-    marginBottom: 12,
+    marginBottom: 16,
+    letterSpacing: -0.3,
   },
   infoRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#e9ecef',
+    borderBottomColor: 'rgba(0, 0, 0, 0.06)',
   },
   infoLabel: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
     color: '#666',
     flex: 1,
+    letterSpacing: -0.1,
   },
   infoValue: {
-    fontSize: 14,
+    fontSize: 15,
     color: '#1c1c1e',
-    fontWeight: '500',
+    fontWeight: '600',
     flex: 2,
     textAlign: 'right',
+    letterSpacing: -0.1,
   },
   difficultyContainer: {
     flexDirection: 'row',
@@ -1513,6 +2119,238 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#1c1c1e',
     fontWeight: '600',
+  },
+  trafficInfo: {
+    alignItems: 'flex-end',
+  },
+  trafficTimestamp: {
+    fontSize: 10,
+    color: '#666',
+    fontStyle: 'italic',
+    marginTop: 2,
+  },
+  trafficIndicator: {
+    position: 'absolute',
+    top: -10,
+    right: -10,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  trafficIndicatorText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  devControls: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#ddd',
+  },
+  devLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 4,
+    fontWeight: '600',
+  },
+  devSubLabel: {
+    fontSize: 10,
+    color: '#999',
+    marginBottom: 8,
+    fontStyle: 'italic',
+  },
+  trafficButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  trafficButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  trafficButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  trafficButtonSubtext: {
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 10,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 2,
+  },
+  trafficLegend: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+    borderRadius: 6,
+  },
+  trafficLegendText: {
+    fontSize: 11,
+    color: '#6b7280',
+    textAlign: 'center',
+    fontWeight: '400',
+  },
+  userLocationContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  userLocationPin: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#3b82f6',
+    borderWidth: 2,
+    borderColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#3b82f6',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 6,
+  },
+  userLocationDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#fff',
+  },
+  userLocationPulse: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(59, 130, 246, 0.3)',
+  },
+  userTrafficIndicator: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  userTrafficText: {
+    color: '#fff',
+    fontSize: 8,
+    fontWeight: 'bold',
+  },
+  devMenuSection: {
+    padding: 12,
+    backgroundColor: 'rgba(248, 249, 250, 0.8)',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(0, 0, 0, 0.06)',
+  },
+  devMenuTitle: {
+    fontSize: 11,
+    color: '#666',
+    marginBottom: 8,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  devMenuButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 4,
+  },
+  devMenuButton: {
+    flex: 1,
+    height: 28,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: 1,
+  },
+  devMenuButtonText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  devHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  devBadge: {
+    backgroundColor: '#6b7280',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 3,
+  },
+  devBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '600',
+  },
+  devButtonGrid: {
+    gap: 6,
+  },
+  devTestButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginBottom: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  devButtonPrimary: {
+    backgroundColor: '#3b82f6',
+    borderWidth: 1,
+    borderColor: '#2563eb',
+  },
+  devButtonSecondary: {
+    backgroundColor: '#6b7280',
+    borderWidth: 1,
+    borderColor: '#4b5563',
+  },
+  devButtonDanger: {
+    backgroundColor: '#dc2626',
+    borderWidth: 1,
+    borderColor: '#b91c1c',
+  },
+  devButtonIcon: {
+    marginRight: 6,
+  },
+  devTestButtonText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+    flex: 1,
+    letterSpacing: 0.1,
   },
   metadataSection: {
     marginTop: 16,
@@ -1577,5 +2415,42 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#1c1c1e',
     marginBottom: 12,
+  },
+  // Heatmap Toggle Styles
+  heatmapToggle: {
+    position: 'absolute',
+    bottom: 140,
+    right: 16,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+    backdropFilter: 'blur(20px)',
+    transform: [{ scale: 1.02 }],
+  },
+  // Debug Location Info
+  debugLocationInfo: {
+    position: 'absolute',
+    top: 100,
+    left: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    padding: 8,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#007AFF',
+  },
+  debugLocationText: {
+    color: '#007AFF',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
