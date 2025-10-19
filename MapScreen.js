@@ -61,6 +61,7 @@ export default function MapScreen({ user, onLogout }) {
             hazard_flag,
             confidence,
             notes,
+            skateability_score,
             created_at
           )
         `)
@@ -420,7 +421,12 @@ export default function MapScreen({ user, onLogout }) {
         
         {/* User location - rendered first so pins appear on top */}
         {userLocation && (
-          <MapboxGL.UserLocation visible={true} showsUserHeadingIndicator={true} />
+          <MapboxGL.UserLocation 
+            visible={true} 
+            showsUserHeadingIndicator={true}
+            minZoomLevel={1}
+            maxZoomLevel={22}
+          />
         )}
         
         {/* Custom image thumbnail pins */}
@@ -430,8 +436,9 @@ export default function MapScreen({ user, onLogout }) {
             id={String(pin.id)}
             coordinate={pin.coordinates}
             allowOverlap={true}
-            allowOverlapWithPuck={true}
+            allowOverlapWithPuck={false}
             isSelected={false}
+            anchor={{ x: 0.5, y: 1 }}
           >
             <TouchableOpacity
               onPress={() => {
@@ -626,7 +633,14 @@ export default function MapScreen({ user, onLogout }) {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>{selectedPin?.name}</Text>
+              <View style={styles.titleContainer}>
+                <Text style={styles.modalTitle}>{selectedPin?.name}</Text>
+                {selectedPin?.is_verified && (
+                  <View style={styles.verifiedBadge}>
+                    <Text style={styles.verifiedBadgeText}>✓</Text>
+                  </View>
+                )}
+              </View>
               <TouchableOpacity onPress={() => setShowDetailsModal(false)}>
                 <Text style={styles.closeButton}>✕</Text>
               </TouchableOpacity>
@@ -641,64 +655,145 @@ export default function MapScreen({ user, onLogout }) {
                 </ScrollView>
               )}
 
+              {/* Basic Information Section */}
+              <View style={styles.infoSection}>
+                <Text style={styles.sectionTitle}>Spot Information</Text>
+                
+                {selectedPin?.address && (
+                  <View style={styles.infoRow}>
+                    <Text style={styles.infoLabel}>Address</Text>
+                    <Text style={styles.infoValue}>{selectedPin.address}</Text>
+                  </View>
+                )}
+
+                {selectedPin?.spot_type && (
+                  <View style={styles.infoRow}>
+                    <Text style={styles.infoLabel}>Type</Text>
+                    <Text style={styles.infoValue}>{selectedPin.spot_type.charAt(0).toUpperCase() + selectedPin.spot_type.slice(1)}</Text>
+                  </View>
+                )}
+
+                {selectedPin?.difficulty_level && (
+                  <View style={styles.infoRow}>
+                    <Text style={styles.infoLabel}>Difficulty</Text>
+                    <View style={styles.difficultyContainer}>
+                      <Text style={styles.difficultyText}>{selectedPin.difficulty_level}/5</Text>
+                      <View style={styles.difficultyStars}>
+                        {[1, 2, 3, 4, 5].map((star) => (
+                          <Text key={star} style={[
+                            styles.difficultyStar,
+                            star <= selectedPin.difficulty_level ? styles.difficultyStarActive : styles.difficultyStarInactive
+                          ]}>
+                            ★
+                          </Text>
+                        ))}
+                      </View>
+                    </View>
+                  </View>
+                )}
+
+                <View style={styles.infoRow}>
+                  <Text style={styles.infoLabel}>Traffic</Text>
+                  <View style={styles.trafficContainer}>
+                    <View style={styles.trafficHeatmap}>
+                      {[1, 2, 3, 4, 5].map((level) => {
+                        const trafficLevel = selectedPin?.difficulty_level || 3;
+                        let barColor = '#e0e0e0'; // inactive
+                        
+                        if (level <= trafficLevel) {
+                          if (level <= 2) barColor = '#4CAF50'; // green for low
+                          else if (level <= 3) barColor = '#FF9800'; // orange for medium
+                          else barColor = '#F44336'; // red for high
+                        }
+                        
+                        return (
+                          <View 
+                            key={level} 
+                            style={[
+                              styles.trafficBar,
+                              { backgroundColor: barColor }
+                            ]} 
+                          />
+                        );
+                      })}
+                    </View>
+                    <Text style={styles.trafficLabel}>
+                      {selectedPin?.difficulty_level ? 
+                        (selectedPin.difficulty_level <= 2 ? 'Low' : 
+                         selectedPin.difficulty_level <= 3 ? 'Medium' : 'High') : 'Unknown'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
               {selectedPin?.description ? (
-                <>
-                  <Text style={styles.label}>Description</Text>
+                <View style={styles.infoSection}>
+                  <Text style={styles.sectionTitle}>Description</Text>
                   <Text style={styles.descriptionText}>{selectedPin.description}</Text>
-                </>
+                </View>
               ) : null}
 
-              {/* AI Rating Section */}
+              {/* AI Analysis Section */}
               {selectedPin?.latestRating ? (
                 <View style={styles.ratingSection}>
-                  <Text style={styles.label}>AI Analysis</Text>
+                  <Text style={styles.sectionTitle}>AI Analysis</Text>
                   
                   {/* Hazard Warning */}
                   {selectedPin.latestRating.hazard_flag && (
                     <View style={styles.hazardWarning}>
-                      <Text style={styles.hazardText}>⚠️ HAZARD DETECTED</Text>
+                      <Text style={styles.hazardText}>HAZARD DETECTED</Text>
                       <Text style={styles.hazardSubtext}>This spot may contain dangerous elements</Text>
                     </View>
                   )}
 
-                  {/* Rating Grid */}
-                  <View style={styles.ratingGrid}>
-                    <View style={styles.ratingItem}>
-                      <Text style={styles.ratingLabel}>Smoothness</Text>
-                      <Text style={styles.ratingValue}>{selectedPin.latestRating.smoothness}/5</Text>
-                    </View>
-                    <View style={styles.ratingItem}>
-                      <Text style={styles.ratingLabel}>Continuity</Text>
-                      <Text style={styles.ratingValue}>{selectedPin.latestRating.continuity}/5</Text>
-                    </View>
-                    <View style={styles.ratingItem}>
-                      <Text style={styles.ratingLabel}>Debris Risk</Text>
-                      <Text style={styles.ratingValue}>{selectedPin.latestRating.debris_risk}/5</Text>
-                    </View>
-                    <View style={styles.ratingItem}>
-                      <Text style={styles.ratingLabel}>Crack Coverage</Text>
-                      <Text style={styles.ratingValue}>{selectedPin.latestRating.crack_coverage}/5</Text>
-                    </View>
-                    <View style={styles.ratingItem}>
-                      <Text style={styles.ratingLabel}>Night Visibility</Text>
-                      <Text style={styles.ratingValue}>{selectedPin.latestRating.night_visibility}/5</Text>
-                    </View>
-                    <View style={styles.ratingItem}>
-                      <Text style={styles.ratingLabel}>Confidence</Text>
-                      <Text style={styles.ratingValue}>{Math.round(selectedPin.latestRating.confidence * 100)}%</Text>
-                    </View>
+                  {/* Skateability Score - Top Priority */}
+                  <View style={styles.skateabilityScore}>
+                    <Text style={styles.skateabilityLabel}>Overall Skateability</Text>
+                    <Text style={styles.skateabilityValue}>
+                      {selectedPin.latestRating.skateability_score ? selectedPin.latestRating.skateability_score.toFixed(1) : ((selectedPin.latestRating.smoothness + selectedPin.latestRating.continuity + (6 - selectedPin.latestRating.debris_risk) + (6 - selectedPin.latestRating.crack_coverage) + selectedPin.latestRating.night_visibility) / 5).toFixed(1)}/5.0
+                    </Text>
+                    <Text style={styles.confidenceText}>
+                      Confidence: {(selectedPin.latestRating.confidence * 100).toFixed(1)}%
+                    </Text>
                   </View>
 
-                  {selectedPin.latestRating.notes && (
-                    <View style={styles.notesSection}>
-                      <Text style={styles.notesLabel}>AI Notes</Text>
-                      <Text style={styles.notesText}>{selectedPin.latestRating.notes}</Text>
+                  {/* Detailed Report - Bottom Section */}
+                  <View style={styles.detailedReportSection}>
+                    <Text style={styles.detailedReportTitle}>Detailed Report</Text>
+                    <View style={styles.ratingGrid}>
+                      <View style={styles.ratingItem}>
+                        <Text style={styles.ratingLabel}>Smoothness</Text>
+                        <Text style={styles.ratingValue}>{parseFloat(selectedPin.latestRating.smoothness).toFixed(1)}/5.0</Text>
+                      </View>
+                      <View style={styles.ratingItem}>
+                        <Text style={styles.ratingLabel}>Continuity</Text>
+                        <Text style={styles.ratingValue}>{parseFloat(selectedPin.latestRating.continuity).toFixed(1)}/5.0</Text>
+                      </View>
+                      <View style={styles.ratingItem}>
+                        <Text style={styles.ratingLabel}>Debris Risk</Text>
+                        <Text style={styles.ratingValue}>{parseFloat(selectedPin.latestRating.debris_risk).toFixed(1)}/5.0</Text>
+                      </View>
+                      <View style={styles.ratingItem}>
+                        <Text style={styles.ratingLabel}>Crack Coverage</Text>
+                        <Text style={styles.ratingValue}>{parseFloat(selectedPin.latestRating.crack_coverage).toFixed(1)}/5.0</Text>
+                      </View>
+                      <View style={styles.ratingItem}>
+                        <Text style={styles.ratingLabel}>Night Visibility</Text>
+                        <Text style={styles.ratingValue}>{parseFloat(selectedPin.latestRating.night_visibility).toFixed(1)}/5.0</Text>
+                      </View>
                     </View>
-                  )}
 
-                  <Text style={styles.ratingTimestamp}>
-                    Analyzed: {new Date(selectedPin.latestRating.created_at).toLocaleString()}
-                  </Text>
+                    {selectedPin.latestRating.notes && (
+                      <View style={styles.notesSection}>
+                        <Text style={styles.notesLabel}>AI Notes</Text>
+                        <Text style={styles.notesText}>{selectedPin.latestRating.notes}</Text>
+                      </View>
+                    )}
+
+                    <Text style={styles.ratingTimestamp}>
+                      Analyzed: {new Date(selectedPin.latestRating.created_at).toLocaleString()}
+                    </Text>
+                  </View>
                 </View>
               ) : (
                 <View style={styles.noRatingSection}>
@@ -723,9 +818,26 @@ export default function MapScreen({ user, onLogout }) {
                 </View>
               )}
 
-              <Text style={styles.metaText}>
-                Added: {selectedPin?.created_at ? new Date(selectedPin.created_at).toLocaleDateString() : ''}
-              </Text>
+              {/* Metadata Section */}
+              <View style={styles.metadataSection}>
+                <Text style={styles.sectionTitle}>Details</Text>
+                <View style={styles.metaRow}>
+                  <Text style={styles.metaLabel}>Added</Text>
+                  <Text style={styles.metaValue}>
+                    {selectedPin?.created_at ? new Date(selectedPin.created_at).toLocaleDateString() : 'Unknown'}
+                  </Text>
+                </View>
+                {selectedPin?.created_by && (
+                  <View style={styles.metaRow}>
+                    <Text style={styles.metaLabel}>Created by</Text>
+                    <Text style={styles.metaValue}>User {selectedPin.created_by.slice(0, 8)}...</Text>
+                  </View>
+                )}
+                <View style={styles.metaRow}>
+                  <Text style={styles.metaLabel}>Spot ID</Text>
+                  <Text style={styles.metaValue}>{selectedPin?.id?.slice(0, 8)}...</Text>
+                </View>
+              </View>
             </ScrollView>
 
             <View style={styles.modalFooter}>
@@ -859,7 +971,7 @@ const styles = StyleSheet.create({
   },
   zoomControls: {
     position: 'absolute',
-    bottom: 100,
+    bottom: 150,
     right: 20,
     flexDirection: 'column',
     backgroundColor: 'transparent',
@@ -873,9 +985,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     shadowColor: '#ffffff',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.7,
-    shadowRadius: 12,
-    elevation: 8,
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 6,
   },
   neonButton: {
     width: 40,
@@ -890,7 +1002,7 @@ const styles = StyleSheet.create({
     fontWeight: '300',
     textShadowColor: '#ffffff',
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 6,
+    textShadowRadius: 4,
   },
   neonDivider: {
     height: 1.5,
@@ -899,8 +1011,8 @@ const styles = StyleSheet.create({
     marginHorizontal: 8,
     shadowColor: '#ffffff',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
-    shadowRadius: 3,
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
   },
   neonCircle: {
     width: 24,
@@ -938,7 +1050,7 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
     right: 16,
-    bottom: 24,
+    bottom: 70,
     backgroundColor: 'rgba(10, 10, 15, 0.7)',
     width: 56,
     height: 56,
@@ -946,10 +1058,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#ffffff',
-    shadowOpacity: 0.7,
-    shadowRadius: 12,
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
-    elevation: 8,
+    elevation: 6,
     borderWidth: 2.5,
     borderColor: '#fff',
   },
@@ -960,7 +1072,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textShadowColor: '#ffffff',
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 6,
+    textShadowRadius: 4,
   },
   modalOverlay: {
     flex: 1,
@@ -972,6 +1084,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     maxHeight: '80%',
+    paddingBottom: 40, // Add extra space at bottom to prevent cutoff
   },
   modalHeader: {
     flexDirection: 'row',
@@ -981,9 +1094,28 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
+  titleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
   modalTitle: {
     fontSize: 20,
     fontWeight: '700',
+    marginRight: 8,
+  },
+  verifiedBadge: {
+    backgroundColor: '#22c55e',
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  verifiedBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
   },
   closeButton: {
     fontSize: 28,
@@ -1260,7 +1392,8 @@ const styles = StyleSheet.create({
     borderLeftColor: 'transparent',
     borderRightColor: 'transparent',
     borderTopColor: '#fff',
-    marginTop: -1,
+    marginTop: -2,
+    alignSelf: 'center',
   },
   silhouettePinContainer: {
     marginTop: 4,
@@ -1273,6 +1406,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     shadowOpacity: 0.6,
     shadowRadius: 8,
+    alignSelf: 'center',
   },
   markerLabel: {
     marginBottom: 5,
@@ -1296,5 +1430,152 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     textAlign: 'center',
     flexWrap: 'wrap',
+  },
+  // Enhanced Modal Styles
+  infoSection: {
+    marginTop: 16,
+    padding: 16,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1c1c1e',
+    marginBottom: 12,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e9ecef',
+  },
+  infoLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+    flex: 1,
+  },
+  infoValue: {
+    fontSize: 14,
+    color: '#1c1c1e',
+    fontWeight: '500',
+    flex: 2,
+    textAlign: 'right',
+  },
+  difficultyContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 2,
+    justifyContent: 'flex-end',
+  },
+  difficultyText: {
+    fontSize: 14,
+    color: '#1c1c1e',
+    fontWeight: '600',
+    marginRight: 8,
+  },
+  difficultyStars: {
+    flexDirection: 'row',
+  },
+  difficultyStar: {
+    fontSize: 12,
+    marginHorizontal: 1,
+  },
+  difficultyStarActive: {
+    opacity: 1,
+  },
+  difficultyStarInactive: {
+    opacity: 0.3,
+  },
+  trafficContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 2,
+    justifyContent: 'flex-end',
+  },
+  trafficHeatmap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  trafficBar: {
+    width: 4,
+    height: 16,
+    marginHorizontal: 1,
+    borderRadius: 2,
+  },
+  trafficLabel: {
+    fontSize: 12,
+    color: '#1c1c1e',
+    fontWeight: '600',
+  },
+  metadataSection: {
+    marginTop: 16,
+    padding: 16,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  metaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  metaLabel: {
+    fontSize: 13,
+    color: '#666',
+    fontWeight: '500',
+  },
+  metaValue: {
+    fontSize: 13,
+    color: '#1c1c1e',
+    fontWeight: '600',
+  },
+  // AI Analysis Enhanced Styles
+  skateabilityScore: {
+    backgroundColor: '#fff',
+    padding: 20,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#007bff',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  skateabilityLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 8,
+  },
+  skateabilityValue: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#007bff',
+    marginBottom: 4,
+  },
+  confidenceText: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '500',
+  },
+  detailedReportSection: {
+    backgroundColor: '#f8f9fa',
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  detailedReportTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1c1c1e',
+    marginBottom: 12,
   },
 });
