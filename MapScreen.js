@@ -18,6 +18,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Constants from 'expo-constants';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
+// Conditional import for expo-av to handle cases where it's not available
+let Video = null;
+try {
+  const AV = require('expo-av');
+  Video = AV.Video;
+} catch (error) {
+  console.warn('expo-av not available:', error.message);
+}
 import { supabase } from './supabase';
 import { evaluateSpot, reEvaluateSpot } from './lib/ratings';
 import locationService from './lib/locationService';
@@ -35,13 +43,20 @@ export default function MapScreen({ user, onLogout }) {
   const [nearbySpots, setNearbySpots] = useState(new Set());
   const [devMode] = useState(__DEV__); // Development mode for testing
   const [manualTrafficLevel, setManualTrafficLevel] = useState(0);
-  const [newPinData, setNewPinData] = useState({ name: '', description: '', photos: [] });
+  const [newPinData, setNewPinData] = useState({ name: '', description: '', media: [] });
   const [currentZoom, setCurrentZoom] = useState(14);
   const [ratingStatus, setRatingStatus] = useState(null); // 'evaluating', 'success', 'pending', 'error'
   const [heatmapData, setHeatmapData] = useState([]);
   const [isLocationTracking, setIsLocationTracking] = useState(false);
   const [liveTrafficData, setLiveTrafficData] = useState(new Map());
   const [showHeatmap, setShowHeatmap] = useState(true);
+  
+  // Zoom-based UI constants
+  const ZOOM_THRESHOLDS = {
+    CLOSE_UP: 15,    // Show detailed labels and full pins
+    MEDIUM: 13,      // Show simplified pins with minimal info
+    FAR_OUT: 11      // Show only basic pins, no labels
+  };
   const cameraRef = useRef(null);
   const token = Constants?.expoConfig?.extra?.MAPBOX_PUBLIC_TOKEN || Constants?.manifest?.extra?.MAPBOX_PUBLIC_TOKEN;
 
@@ -56,6 +71,72 @@ export default function MapScreen({ user, onLogout }) {
       case 5: return '#dc2626'; // Dark red - Maximum traffic
       default: return '#6b7280'; // Gray - Unknown
     }
+  };
+
+  // Zoom-based UI helpers
+  const shouldShowLabels = () => currentZoom >= ZOOM_THRESHOLDS.CLOSE_UP;
+  const shouldShowDetailedPins = () => currentZoom >= ZOOM_THRESHOLDS.MEDIUM;
+  const shouldShowMinimalPins = () => currentZoom >= ZOOM_THRESHOLDS.FAR_OUT;
+  
+  const getPinSize = () => {
+    if (currentZoom >= ZOOM_THRESHOLDS.CLOSE_UP) return { width: 64, height: 64 };
+    if (currentZoom >= ZOOM_THRESHOLDS.MEDIUM) return { width: 48, height: 48 };
+    return { width: 32, height: 32 };
+  };
+
+  // Simple clustering function to reduce clutter when zoomed out
+  const getClusteredPins = () => {
+    // Only cluster when zoomed out significantly
+    if (currentZoom >= ZOOM_THRESHOLDS.MEDIUM) {
+      return pins; // No clustering when zoomed in
+    }
+
+    const clusteredPins = [];
+    const processedPins = new Set();
+    
+    pins.forEach((pin, index) => {
+      if (processedPins.has(index)) return;
+      
+      const cluster = [pin];
+      processedPins.add(index);
+      
+      // Find nearby pins to cluster together
+      pins.forEach((otherPin, otherIndex) => {
+        if (processedPins.has(otherIndex) || index === otherIndex) return;
+        
+        // Simple distance calculation (rough approximation)
+        const distance = Math.sqrt(
+          Math.pow(pin.coordinates[0] - otherPin.coordinates[0], 2) +
+          Math.pow(pin.coordinates[1] - otherPin.coordinates[1], 2)
+        );
+        
+        // Much smaller threshold - only cluster very close pins
+        const threshold = currentZoom >= ZOOM_THRESHOLDS.FAR_OUT ? 0.005 : 0.003;
+        
+        if (distance < threshold) {
+          cluster.push(otherPin);
+          processedPins.add(otherIndex);
+        }
+      });
+      
+      // Create cluster pin
+      if (cluster.length === 1) {
+        clusteredPins.push(pin);
+      } else {
+        const clusterPin = {
+          ...cluster[0], // Use first pin as base
+          clusterSize: cluster.length,
+          clusterPins: cluster,
+          coordinates: [
+            cluster.reduce((sum, p) => sum + p.coordinates[0], 0) / cluster.length,
+            cluster.reduce((sum, p) => sum + p.coordinates[1], 0) / cluster.length
+          ]
+        };
+        clusteredPins.push(clusterPin);
+      }
+    });
+    
+    return clusteredPins;
   };
 
   // MVP: Improved heatmap data generator
@@ -259,10 +340,17 @@ export default function MapScreen({ user, onLogout }) {
           ? spot.skate_spot_ratings[0] 
           : null;
 
-        // Get photos from spot_media
-        const photos = spot.spot_media 
-          ? spot.spot_media.filter(media => media.media_type === 'image').map(media => media.media_url)
+        // Get media from spot_media
+        const media = spot.spot_media 
+          ? spot.spot_media.map(media => ({
+              url: media.media_url,
+              type: media.media_type,
+              metadata: media.metadata || {}
+            }))
           : [];
+        
+        // Get photos for backward compatibility
+        const photos = media.filter(m => m.type === 'image').map(m => m.url);
 
         // Get traffic data from spot_traffic relation
         const trafficData = spot.spot_traffic && spot.spot_traffic.length > 0 
@@ -277,7 +365,8 @@ export default function MapScreen({ user, onLogout }) {
           address: spot.address,
           spot_type: spot.spot_type,
           difficulty_level: spot.difficulty_level,
-          photos: photos,
+          media: media,
+          photos: photos, // Backward compatibility
           created_at: spot.created_at,
           created_by: spot.created_by,
           latestRating: latestRating,
@@ -356,6 +445,16 @@ export default function MapScreen({ user, onLogout }) {
     } catch {}
   }, []);
 
+  // Track zoom changes for UI updates
+  const onCameraChanged = useCallback(async () => {
+    try {
+      const zoom = await cameraRef.current?.getZoom();
+      if (zoom && zoom !== currentZoom) {
+        setCurrentZoom(zoom);
+      }
+    } catch {}
+  }, [currentZoom]);
+
   const onPinPress = useCallback((event) => {
     const features = event?.features;
     if (features && features.length > 0) {
@@ -373,57 +472,74 @@ export default function MapScreen({ user, onLogout }) {
       Alert.alert('Location Required', 'Please enable location services to add a pin.');
       return;
     }
-    setNewPinData({ name: '', description: '', photos: [] });
+    setNewPinData({ name: '', description: '', media: [] });
     setShowAddModal(true);
   }, [userLocation]);
 
-  const pickImage = async () => {
+  const pickMedia = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Camera roll permission is needed to add photos.');
+      Alert.alert('Permission Required', 'Camera roll permission is needed to add media.');
       return;
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsMultipleSelection: false,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
+      allowsMultipleSelection: true,
       quality: 0.7,
     });
 
-    if (!result.canceled && result.assets[0]) {
+    if (!result.canceled && result.assets) {
+      const newMedia = result.assets.map(asset => ({
+        uri: asset.uri,
+        type: asset.type, // 'image' or 'video'
+        filename: asset.fileName || `media_${Date.now()}.${asset.type === 'image' ? 'jpg' : 'mp4'}`,
+        size: asset.fileSize,
+        duration: asset.duration, // for videos
+        width: asset.width,
+        height: asset.height
+      }));
+
       setNewPinData(prev => ({
         ...prev,
-        photos: [...prev.photos, result.assets[0].uri],
+        media: [...prev.media, ...newMedia],
       }));
     }
   };
 
-  const uploadImageToSupabase = async (imageUri, spotId) => {
+  const uploadMediaToSupabase = async (mediaItem, spotId) => {
     try {
-      const filename = `${spotId}_${Date.now()}.jpg`;
-      console.log('Uploading image:', imageUri, 'as', filename);
+      const fileExtension = mediaItem.type === 'image' ? 'jpg' : 'mp4';
+      const mimeType = mediaItem.type === 'image' ? 'image/jpeg' : 'video/mp4';
+      const filename = `${spotId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${fileExtension}`;
+      
+      console.log(`Uploading ${mediaItem.type}:`, mediaItem.uri, 'as', filename);
 
-      // For testing in simulator, use a real skate park image
-      if (imageUri.includes('Library/Caches/ImagePicker')) {
-        console.log('Simulator detected - using real skate park image');
-        return 'https://drupal-prod.visitcalifornia.com/sites/default/files/styles/fluid_1920/public/VC_Skateparks_MagdalenaEckeYMCA_Supplied_IMG_5676_RT_1280x640.jpg.webp?itok=Q6g-kDMY';
+      // For testing in simulator, use real media URLs
+      if (mediaItem.uri.includes('Library/Caches/ImagePicker')) {
+        console.log('Simulator detected - using real media URL');
+        if (mediaItem.type === 'image') {
+          return 'https://drupal-prod.visitcalifornia.com/sites/default/files/styles/fluid_1920/public/VC_Skateparks_MagdalenaEckeYMCA_Supplied_IMG_5676_RT_1280x640.jpg.webp?itok=Q6g-kDMY';
+        } else {
+          return 'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4';
+        }
       }
 
       const file = {
-        uri: imageUri,
-        type: 'image/jpeg',
+        uri: mediaItem.uri,
+        type: mimeType,
         name: filename,
       };
 
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('spot-media')
         .upload(filename, file, {
-          contentType: 'image/jpeg',
+          contentType: mimeType,
           upsert: false
         });
 
       if (uploadError) {
-        console.error('Error uploading image:', uploadError);
+        console.error(`Error uploading ${mediaItem.type}:`, uploadError);
         return null;
       }
 
@@ -435,7 +551,7 @@ export default function MapScreen({ user, onLogout }) {
       console.log('Public URL:', publicUrl);
       return publicUrl;
     } catch (error) {
-      console.error('Error uploading image:', error);
+      console.error(`Error uploading ${mediaItem.type}:`, error);
       return null;
     }
   };
@@ -470,21 +586,32 @@ export default function MapScreen({ user, onLogout }) {
         return;
       }
 
-      // Upload images and get URLs
-      const uploadedPhotos = [];
-      for (const photoUri of newPinData.photos) {
-        const imageUrl = await uploadImageToSupabase(photoUri, data.id);
-        if (imageUrl) {
-          uploadedPhotos.push(imageUrl);
+      // Upload media files and get URLs
+      const uploadedMedia = [];
+      for (const mediaItem of newPinData.media) {
+        const mediaUrl = await uploadMediaToSupabase(mediaItem, data.id);
+        if (mediaUrl) {
+          uploadedMedia.push({
+            url: mediaUrl,
+            type: mediaItem.type,
+            duration: mediaItem.duration,
+            width: mediaItem.width,
+            height: mediaItem.height
+          });
           
           // Save media reference to database
           await supabase
             .from('spot_media')
             .insert({
               spot_id: data.id,
-              media_url: imageUrl,
-              media_type: 'image',
-              uploaded_by: user?.id
+              media_url: mediaUrl,
+              media_type: mediaItem.type,
+              uploaded_by: user?.id,
+              metadata: {
+                duration: mediaItem.duration,
+                width: mediaItem.width,
+                height: mediaItem.height
+              }
             });
         }
       }
@@ -495,7 +622,8 @@ export default function MapScreen({ user, onLogout }) {
         coordinates: [data.longitude, data.latitude],
         name: data.name,
         description: data.description,
-        photos: uploadedPhotos,
+        media: uploadedMedia,
+        photos: uploadedMedia.filter(m => m.type === 'image').map(m => m.url), // Backward compatibility
         created_at: data.created_at,
         created_by: data.created_by,
         address: data.address,
@@ -508,13 +636,14 @@ export default function MapScreen({ user, onLogout }) {
       setPins(prev => [...prev, newPin]);
       setShowAddModal(false);
       
-      // Trigger AI evaluation if we have photos
-      if (uploadedPhotos.length > 0) {
+      // Trigger AI evaluation if we have images
+      const firstImage = uploadedMedia.find(m => m.type === 'image');
+      if (firstImage) {
         setRatingStatus('evaluating');
         
         const aiResult = await evaluateSpot({
           spotId: data.id,
-          imageUrl: uploadedPhotos[0], // Use first photo
+          imageUrl: firstImage.url,
           userId: user?.id
         });
 
@@ -552,7 +681,7 @@ export default function MapScreen({ user, onLogout }) {
       }
 
       // Reset form
-      setNewPinData({ name: '', description: '', photos: [] });
+      setNewPinData({ name: '', description: '', media: [] });
       setRatingStatus(null);
       
     } catch (error) {
@@ -563,17 +692,19 @@ export default function MapScreen({ user, onLogout }) {
   }, [newPinData, userLocation, user]);
 
   const handleReEvaluate = async (pin) => {
-    if (!pin.photos || pin.photos.length === 0) {
-      Alert.alert('No Photos', 'This spot needs at least one photo for AI analysis.');
+    const firstImage = pin.media?.find(m => m.type === 'image') || pin.photos?.[0];
+    if (!firstImage) {
+      Alert.alert('No Images', 'This spot needs at least one image for AI analysis.');
       return;
     }
 
     try {
       setRatingStatus('evaluating');
       
+      const imageUrl = typeof firstImage === 'string' ? firstImage : firstImage.url;
       const aiResult = await reEvaluateSpot({
         spotId: pin.id,
-        imageUrl: pin.photos[0],
+        imageUrl: imageUrl,
         userId: user?.id
       });
 
@@ -612,12 +743,59 @@ export default function MapScreen({ user, onLogout }) {
 
   const defaultPinIcon = require('./assets/better-pin.png');
 
+  // Media Gallery Component
+  const MediaGallery = ({ media }) => {
+    if (!media || media.length === 0) return null;
+
+    return (
+      <ScrollView horizontal pagingEnabled style={styles.mediaGallery}>
+        {media.map((mediaItem, index) => (
+          <View key={index} style={styles.mediaItem}>
+            {mediaItem.type === 'image' ? (
+              <Image
+                source={{ uri: mediaItem.url }}
+                style={styles.mediaImage}
+                resizeMode="cover"
+              />
+            ) : Video ? (
+              <Video
+                source={{ uri: mediaItem.url }}
+                style={styles.mediaVideo}
+                useNativeControls
+                resizeMode="contain"
+                shouldPlay={false}
+                isLooping={false}
+              />
+            ) : (
+              <View style={styles.videoPlaceholder}>
+                <Text style={styles.videoPlaceholderText}>VID</Text>
+                <Text style={styles.videoPlaceholderLabel}>Video</Text>
+                <Text style={styles.videoPlaceholderSubtext}>Video playback not available</Text>
+              </View>
+            )}
+            <View style={styles.mediaOverlay}>
+              <Text style={styles.mediaTypeLabel}>
+                {mediaItem.type === 'image' ? 'IMG' : 'VID'}
+              </Text>
+              {mediaItem.type === 'video' && mediaItem.metadata?.duration && (
+                <Text style={styles.mediaDuration}>
+                  {Math.floor(mediaItem.metadata.duration / 1000)}s
+                </Text>
+              )}
+            </View>
+          </View>
+        ))}
+      </ScrollView>
+    );
+  };
+
   return (
     <View style={styles.container}>
       <MapboxGL.MapView 
         style={styles.map} 
         styleURL="mapbox://styles/mapbox/dark-v11"
         onMapIdle={onMapIdle}
+        onCameraChanged={onCameraChanged}
         attributionEnabled={false}
         logoEnabled={false}
         compassEnabled={false}
@@ -657,6 +835,9 @@ export default function MapScreen({ user, onLogout }) {
           <View style={styles.debugLocationInfo}>
             <Text style={styles.debugLocationText}>
               User Location: {userLocation ? `${userLocation[1].toFixed(4)}, ${userLocation[0].toFixed(4)}` : 'Not set'}
+            </Text>
+            <Text style={styles.debugLocationText}>
+              Zoom: {currentZoom.toFixed(1)} | Pins: {pins.length} | Clustering: Disabled
             </Text>
           </View>
         )}
@@ -719,81 +900,187 @@ export default function MapScreen({ user, onLogout }) {
           </MapboxGL.ShapeSource>
         )}
 
-        {/* Custom image thumbnail pins */}
-        {pins.map((pin) => (
-          <MapboxGL.MarkerView
-            key={pin.id}
-            id={String(pin.id)}
-            coordinate={pin.coordinates}
-            allowOverlap={true}
-            allowOverlapWithPuck={false}
-            isSelected={false}
-            anchor={{ x: 0.5, y: 1 }}
-          >
-            <TouchableOpacity
-              onPress={() => {
-                setSelectedPin(pin);
-                setShowDetailsModal(true);
-              }}
-              activeOpacity={0.8}
+        {/* Smart zoom-based pins with clustering */}
+        {pins.map((pin) => {
+          const pinSize = getPinSize();
+          const showLabels = shouldShowLabels();
+          const showDetailed = shouldShowDetailedPins();
+          const showMinimal = shouldShowMinimalPins();
+          
+          // Don't render pins if zoomed out too far
+          if (!showMinimal) return null;
+          
+          return (
+            <MapboxGL.MarkerView
+              key={pin.id}
+              id={String(pin.id)}
+              coordinate={pin.coordinates}
+              allowOverlap={true}
+              allowOverlapWithPuck={false}
+              isSelected={false}
+              anchor={{ x: 0.5, y: 1 }}
             >
-              <View style={styles.markerContainer}>
-                {/* Spot name label - now above */}
-                <View style={styles.markerLabel}>
-                  <Text style={styles.markerLabelText}>
-                    {pin.name}
-                  </Text>
-                </View>
-                 
-                 {/* Enhanced Traffic indicator */}
-                 {(pin.current_users || 0) > 0 && (
-                   <View style={[
-                     styles.trafficIndicator,
-                     { 
-                       backgroundColor: getTrafficColor(pin.traffic_level || 0),
-                       borderWidth: (pin.current_users || 0) > 5 ? 3 : 2,
-                       borderColor: '#fff',
-                       shadowColor: getTrafficColor(pin.traffic_level || 0),
-                       shadowOpacity: 0.8,
-                       shadowRadius: 4
-                     }
-                   ]}>
-                     <Text style={[
-                       styles.trafficIndicatorText,
+              <TouchableOpacity
+                onPress={() => {
+                  // If it's a cluster, show the first pin or create a cluster overview
+                  if (pin.clusterSize && pin.clusterSize > 1) {
+                    // For now, show the first pin in the cluster
+                    // TODO: Could implement a cluster overview modal later
+                    setSelectedPin(pin.clusterPins[0]);
+                  } else {
+                    setSelectedPin(pin);
+                  }
+                  setShowDetailsModal(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <View style={styles.markerContainer}>
+                  {/* Conditional label rendering - only when zoomed in close */}
+                  {showLabels && (
+                    <View style={[styles.markerLabel, { marginBottom: showDetailed ? 6 : 3 }]}>
+                      <Text style={[
+                        styles.markerLabelText,
+                        { fontSize: showDetailed ? 12 : 10 }
+                      ]}>
+                        {pin.clusterSize && pin.clusterSize > 1 
+                          ? `${pin.clusterSize} spots` 
+                          : pin.name
+                        }
+                      </Text>
+                    </View>
+                  )}
+                   
+                   {/* Traffic indicator - always visible when there are users */}
+                   {(pin.current_users || 0) > 0 && showDetailed && (
+                     <View style={[
+                       styles.trafficIndicator,
                        { 
-                         fontSize: (pin.current_users || 0) > 9 ? 8 : 10,
-                         fontWeight: (pin.current_users || 0) > 5 ? '900' : 'bold'
+                         backgroundColor: getTrafficColor(pin.traffic_level || 0),
+                         borderWidth: (pin.current_users || 0) > 5 ? 3 : 2,
+                         borderColor: '#fff',
+                         shadowColor: getTrafficColor(pin.traffic_level || 0),
+                         shadowOpacity: 0.8,
+                         shadowRadius: 4,
+                         width: showDetailed ? 28 : 20,
+                         height: showDetailed ? 28 : 20,
+                         borderRadius: showDetailed ? 14 : 10,
+                         top: showDetailed ? -10 : -8,
+                         right: showDetailed ? -10 : -8
                        }
                      ]}>
-                       {pin.current_users || 0}
-                     </Text>
-                   </View>
-                 )}
-                 
-                {pin.photos && pin.photos.length > 0 ? (
-                  <>
-                    <View style={styles.markerImageContainer}>
-                      <Image
-                        source={{ uri: pin.photos[0] }}
-                        style={styles.markerImage}
-                        resizeMode="cover"
-                      />
+                       <Text style={[
+                         styles.trafficIndicatorText,
+                         { 
+                           fontSize: showDetailed ? ((pin.current_users || 0) > 9 ? 8 : 10) : 8,
+                           fontWeight: (pin.current_users || 0) > 5 ? '900' : 'bold'
+                         }
+                       ]}>
+                         {pin.current_users || 0}
+                       </Text>
+                     </View>
+                   )}
+                   
+                  {/* Pin content based on zoom level */}
+                  {pin.photos && pin.photos.length > 0 ? (
+                    <>
+                      <View style={[
+                        styles.markerImageContainer,
+                        {
+                          width: pinSize.width,
+                          height: pinSize.height,
+                          borderRadius: showDetailed ? 12 : 8,
+                          borderWidth: showDetailed ? 3 : 2,
+                          overflow: 'hidden',
+                          backgroundColor: '#fff'
+                        }
+                      ]}>
+                        <Image
+                          source={{ uri: pin.photos[0] }}
+                          style={[
+                            styles.markerImage,
+                            {
+                              width: pinSize.width,
+                              height: pinSize.height,
+                              borderRadius: showDetailed ? 9 : 6
+                            }
+                          ]}
+                          resizeMode="cover"
+                        />
+                      </View>
+                      <View style={[
+                        styles.markerPointer,
+                        {
+                          borderLeftWidth: showDetailed ? 8 : 6,
+                          borderRightWidth: showDetailed ? 8 : 6,
+                          borderTopWidth: showDetailed ? 12 : 8,
+                          marginTop: -1
+                        }
+                      ]} />
+                    </>
+                  ) : (
+                    <View style={[
+                      styles.snapmapPin,
+                      {
+                        width: pinSize.width,
+                        height: pinSize.height,
+                        borderRadius: pinSize.width / 2,
+                        borderWidth: showDetailed ? 3 : 2
+                      }
+                    ]}>
+                      <View style={[
+                        styles.snapmapPinInner,
+                        {
+                          width: pinSize.width - 6,
+                          height: pinSize.height - 6,
+                          borderRadius: (pinSize.width - 6) / 2
+                        }
+                      ]}>
+                        {/* Show cluster size for clustered pins */}
+                        {pin.clusterSize && pin.clusterSize > 1 ? (
+                          <Text style={[
+                            styles.snapmapPinText,
+                            { 
+                              fontSize: pinSize.width > 40 ? 12 : 10,
+                              color: '#fff',
+                              fontWeight: '800'
+                            }
+                          ]}>
+                            {pin.clusterSize}
+                          </Text>
+                        ) : (
+                          <>
+                            {/* Show traffic count as main content when zoomed out */}
+                            {(pin.current_users || 0) > 0 && !showDetailed && (
+                              <Text style={[
+                                styles.snapmapPinText,
+                                { 
+                                  fontSize: pinSize.width > 40 ? 12 : 10,
+                                  color: '#fff',
+                                  fontWeight: '800'
+                                }
+                              ]}>
+                                {pin.current_users}
+                              </Text>
+                            )}
+                            {/* Show spot type icon when no traffic */}
+                            {(pin.current_users || 0) === 0 && (
+                              <Text style={[
+                                styles.snapmapPinIcon,
+                                { fontSize: pinSize.width > 40 ? 16 : 12 }
+                              ]}>
+                                SK
+                              </Text>
+                            )}
+                          </>
+                        )}
+                      </View>
                     </View>
-                    <View style={styles.markerPointer} />
-                  </>
-                ) : (
-                  <View style={styles.silhouettePinContainer}>
-                    <Image
-                      source={defaultPinIcon}
-                      style={styles.defaultMarkerIcon}
-                      resizeMode="contain"
-                    />
-                  </View>
-                )}
-              </View>
-            </TouchableOpacity>
-          </MapboxGL.MarkerView>
-        ))}
+                  )}
+                </View>
+              </TouchableOpacity>
+            </MapboxGL.MarkerView>
+          );
+        })}
       </MapboxGL.MapView>
 
       {/* Profile Button */}
@@ -1120,13 +1407,45 @@ export default function MapScreen({ user, onLogout }) {
                 numberOfLines={4}
               />
 
-              <Text style={styles.label}>Photos</Text>
+              <Text style={styles.label}>Media (Photos & Videos)</Text>
               <ScrollView horizontal style={styles.photoScroll}>
-                {newPinData.photos.map((uri, idx) => (
-                  <Image key={idx} source={{ uri }} style={styles.photoPreview} />
+                {newPinData.media.map((mediaItem, idx) => (
+                  <View key={idx} style={styles.mediaPreview}>
+                    {mediaItem.type === 'image' ? (
+                      <Image source={{ uri: mediaItem.uri }} style={styles.photoPreview} />
+                    ) : Video ? (
+                      <View style={styles.videoPreview}>
+                        <Video
+                          source={{ uri: mediaItem.uri }}
+                          style={styles.photoPreview}
+                          shouldPlay={false}
+                          useNativeControls={false}
+                        />
+                        <View style={styles.videoPreviewOverlay}>
+                          <Text style={styles.videoPreviewIcon}>VID</Text>
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.videoPreviewPlaceholder}>
+                        <Text style={styles.videoPreviewIcon}>VID</Text>
+                        <Text style={styles.videoPreviewLabel}>Video</Text>
+                      </View>
+                    )}
+                    <TouchableOpacity
+                      style={styles.removeMediaButton}
+                      onPress={() => {
+                        setNewPinData(prev => ({
+                          ...prev,
+                          media: prev.media.filter((_, index) => index !== idx)
+                        }));
+                      }}
+                    >
+                      <Text style={styles.removeMediaButtonText}>×</Text>
+                    </TouchableOpacity>
+                  </View>
                 ))}
-                <TouchableOpacity onPress={pickImage} style={styles.addPhotoButton}>
-                  <Text style={styles.addPhotoText}>+ Add Photo</Text>
+                <TouchableOpacity onPress={pickMedia} style={styles.addPhotoButton}>
+                  <Text style={styles.addPhotoText}>+ Add Media</Text>
                 </TouchableOpacity>
               </ScrollView>
             </ScrollView>
@@ -1152,23 +1471,21 @@ export default function MapScreen({ user, onLogout }) {
                 <Text style={styles.modalTitle}>{selectedPin?.name}</Text>
                 {selectedPin?.is_verified && (
                   <View style={styles.verifiedBadge}>
-                    <Text style={styles.verifiedBadgeText}>✓</Text>
+                    <Ionicons name="checkmark" size={14} color="#fff" />
                   </View>
                 )}
               </View>
-              <TouchableOpacity onPress={() => setShowDetailsModal(false)}>
-                <Text style={styles.closeButton}>✕</Text>
+              <TouchableOpacity 
+                onPress={() => setShowDetailsModal(false)}
+                style={styles.closeButtonContainer}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="close" size={24} color="#666" />
               </TouchableOpacity>
             </View>
 
             <ScrollView style={styles.modalBody}>
-              {selectedPin?.photos && selectedPin.photos.length > 0 && (
-                <ScrollView horizontal pagingEnabled style={styles.photoPager}>
-                  {selectedPin.photos.map((uri, idx) => (
-                    <Image key={idx} source={{ uri }} style={styles.detailPhoto} />
-                  ))}
-                </ScrollView>
-              )}
+              <MediaGallery media={selectedPin?.media} />
 
               {/* Basic Information Section */}
               <View style={styles.infoSection}>
@@ -1252,25 +1569,29 @@ export default function MapScreen({ user, onLogout }) {
                             styles.trafficButton,
                             { 
                               backgroundColor: getTrafficColor(level),
-                              borderColor: selectedPin?.traffic_level === level ? '#fff' : 'rgba(255, 255, 255, 0.2)',
+                              borderColor: selectedPin?.traffic_level === level ? '#fff' : 'rgba(255, 255, 255, 0.3)',
+                              borderWidth: selectedPin?.traffic_level === level ? 2 : 1,
+                              shadowColor: getTrafficColor(level),
+                              shadowOpacity: selectedPin?.traffic_level === level ? 0.4 : 0.2,
+                              transform: selectedPin?.traffic_level === level ? [{ scale: 1.05 }] : [{ scale: 1 }],
                             }
                           ]}
                           onPress={() => simulateUserPresence(selectedPin.id, level)}
-                          activeOpacity={0.8}
+                          activeOpacity={0.7}
                         >
                           {level === 0 ? (
                             <Ionicons 
-                              name="close-circle" 
-                              size={20} 
-                              color="#6b7280" 
-                              style={styles.trafficButtonText}
+                              name="close" 
+                              size={16} 
+                              color="#fff" 
                             />
                           ) : (
                             <Text style={[
                               styles.trafficButtonText,
                               { 
                                 color: '#fff',
-                                fontWeight: selectedPin?.traffic_level === level ? '700' : '600'
+                                fontWeight: selectedPin?.traffic_level === level ? '800' : '600',
+                                fontSize: selectedPin?.traffic_level === level ? 14 : 12,
                               }
                             ]}>
                               {level}
@@ -1279,6 +1600,9 @@ export default function MapScreen({ user, onLogout }) {
                         </TouchableOpacity>
                       ))}
                     </View>
+                    <Text style={styles.trafficLegend}>
+                      Tap to simulate {selectedPin?.current_users || 0} users at this spot
+                    </Text>
                   </View>
                 )}
               </View>
@@ -1360,14 +1684,24 @@ export default function MapScreen({ user, onLogout }) {
               )}
 
               {/* Developer Controls */}
-              {__DEV__ && selectedPin?.photos && selectedPin.photos.length > 0 && (
+              {__DEV__ && (selectedPin?.media?.find(m => m.type === 'image') || selectedPin?.photos?.length > 0) && (
                 <View style={styles.devControlsSection}>
                   <Text style={styles.devControlsLabel}>Developer Controls</Text>
                   <TouchableOpacity 
                     onPress={() => handleReEvaluate(selectedPin)} 
-                    style={styles.reEvaluateButton}
+                    style={[
+                      styles.reEvaluateButton,
+                      ratingStatus === 'evaluating' && styles.reEvaluateButtonDisabled
+                    ]}
                     disabled={ratingStatus === 'evaluating'}
+                    activeOpacity={0.8}
                   >
+                    <Ionicons 
+                      name={ratingStatus === 'evaluating' ? 'hourglass' : 'refresh'} 
+                      size={16} 
+                      color="#fff" 
+                      style={styles.reEvaluateButtonIcon} 
+                    />
                     <Text style={styles.reEvaluateButtonText}>
                       {ratingStatus === 'evaluating' ? 'Evaluating...' : 'Re-evaluate with AI'}
                     </Text>
@@ -1398,7 +1732,12 @@ export default function MapScreen({ user, onLogout }) {
             </ScrollView>
 
             <View style={styles.modalFooter}>
-              <TouchableOpacity onPress={() => setShowDetailsModal(false)} style={styles.closeDetailsButton}>
+              <TouchableOpacity 
+                onPress={() => setShowDetailsModal(false)} 
+                style={styles.closeDetailsButton}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="close-circle" size={20} color="#fff" style={styles.closeButtonIcon} />
                 <Text style={styles.closeDetailsButtonText}>Close</Text>
               </TouchableOpacity>
             </View>
@@ -1705,6 +2044,11 @@ const styles = StyleSheet.create({
     color: '#666',
     fontWeight: '300',
   },
+  closeButtonContainer: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+  },
   modalBody: {
     paddingHorizontal: 24,
     paddingVertical: 20,
@@ -1819,24 +2163,41 @@ const styles = StyleSheet.create({
   },
   closeDetailsButton: {
     flex: 1,
-    padding: 14,
-    borderRadius: 8,
+    padding: 16,
+    borderRadius: 12,
     backgroundColor: '#1c1c1e',
     alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    shadowColor: '#1c1c1e',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
   },
   closeDetailsButtonText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#fff',
+    marginLeft: 8,
+    letterSpacing: 0.2,
+  },
+  closeButtonIcon: {
+    marginRight: 4,
   },
   // AI Rating Styles
   ratingSection: {
-    marginTop: 16,
-    padding: 16,
+    marginTop: 20,
+    padding: 20,
     backgroundColor: '#f8f9fa',
-    borderRadius: 12,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#e9ecef',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   hazardWarning: {
     backgroundColor: '#fff3cd',
@@ -1931,12 +2292,17 @@ const styles = StyleSheet.create({
   },
   // Developer Controls Styles
   devControlsSection: {
-    marginTop: 16,
-    padding: 16,
+    marginTop: 20,
+    padding: 20,
     backgroundColor: '#e3f2fd',
-    borderRadius: 12,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#bbdefb',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   devControlsLabel: {
     fontSize: 14,
@@ -1946,14 +2312,29 @@ const styles = StyleSheet.create({
   },
   reEvaluateButton: {
     backgroundColor: '#1976d2',
-    padding: 12,
-    borderRadius: 8,
+    padding: 14,
+    borderRadius: 10,
     alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    shadowColor: '#1976d2',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  reEvaluateButtonDisabled: {
+    backgroundColor: '#9e9e9e',
+    shadowOpacity: 0.1,
   },
   reEvaluateButtonText: {
     color: '#fff',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
+    letterSpacing: 0.1,
+  },
+  reEvaluateButtonIcon: {
+    marginRight: 6,
   },
   // Custom Marker Styles
   markerContainer: {
@@ -1964,20 +2345,20 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 3,
     borderColor: '#ffffff',
-    padding: 2,
+    padding: 0,
     backgroundColor: 'rgba(0, 0, 0, 0.1)',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4,
     shadowRadius: 8,
     elevation: 8,
+    overflow: 'hidden',
   },
   markerImage: {
     width: 56,
     height: 56,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.1)',
+    borderWidth: 0,
   },
   markerPointer: {
     width: 0,
@@ -2042,6 +2423,11 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(0, 0, 0, 0.06)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   sectionTitle: {
     fontSize: 20,
@@ -2153,18 +2539,24 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   devControls: {
-    marginTop: 12,
+    marginTop: 16,
     padding: 12,
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
+    backgroundColor: 'rgba(248, 249, 250, 0.9)',
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#ddd',
+    borderColor: 'rgba(0, 0, 0, 0.08)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   devLabel: {
-    fontSize: 12,
+    fontSize: 14,
     color: '#666',
-    marginBottom: 4,
-    fontWeight: '600',
+    marginBottom: 8,
+    fontWeight: '700',
+    letterSpacing: 0.2,
   },
   devSubLabel: {
     fontSize: 10,
@@ -2177,20 +2569,26 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   trafficButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
     marginHorizontal: 3,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 2,
+    elevation: 2,
   },
   trafficButtonText: {
     color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
     textAlign: 'center',
+    letterSpacing: 0.3,
   },
   trafficButtonSubtext: {
     color: 'rgba(255, 255, 255, 0.9)',
@@ -2200,17 +2598,20 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   trafficLegend: {
-    marginTop: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     backgroundColor: 'rgba(0, 0, 0, 0.05)',
-    borderRadius: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.08)',
   },
   trafficLegendText: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#6b7280',
     textAlign: 'center',
-    fontWeight: '400',
+    fontWeight: '500',
+    letterSpacing: 0.1,
   },
   userLocationContainer: {
     alignItems: 'center',
@@ -2353,12 +2754,17 @@ const styles = StyleSheet.create({
     letterSpacing: 0.1,
   },
   metadataSection: {
-    marginTop: 16,
-    padding: 16,
+    marginTop: 20,
+    padding: 20,
     backgroundColor: '#f8f9fa',
-    borderRadius: 12,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#e9ecef',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   metaRow: {
     flexDirection: 'row',
@@ -2452,5 +2858,199 @@ const styles = StyleSheet.create({
     color: '#007AFF',
     fontSize: 12,
     fontWeight: '600',
+  },
+  // SnapMap-style pin styles
+  snapmapPin: {
+    backgroundColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  snapmapPinInner: {
+    backgroundColor: '#007AFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#007AFF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  snapmapPinText: {
+    fontWeight: '800',
+    textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  snapmapPinIcon: {
+    textAlign: 'center',
+    opacity: 0.9,
+  },
+  // Cluster-specific styles
+  clusterPin: {
+    backgroundColor: '#fff',
+    borderWidth: 3,
+    borderColor: '#ff6b35',
+    shadowColor: '#ff6b35',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    elevation: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clusterPinInner: {
+    backgroundColor: '#ff6b35',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#ff6b35',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+  },
+  // Cluster content styles
+  clusterContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+  },
+  clusterLabel: {
+    fontWeight: '600',
+    textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.3)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+    opacity: 0.9,
+  },
+  // Media Gallery Styles
+  mediaGallery: {
+    height: 250,
+    marginBottom: 16,
+  },
+  mediaItem: {
+    width: 350,
+    height: 250,
+    marginRight: 8,
+    position: 'relative',
+  },
+  mediaImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 8,
+  },
+  mediaVideo: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 8,
+  },
+  mediaOverlay: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  mediaTypeLabel: {
+    color: '#fff',
+    fontSize: 14,
+    marginRight: 4,
+  },
+  mediaDuration: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  // Media Preview Styles
+  mediaPreview: {
+    position: 'relative',
+    marginRight: 8,
+  },
+  videoPreview: {
+    position: 'relative',
+  },
+  videoPreviewOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  videoPreviewIcon: {
+    fontSize: 20,
+    color: '#fff',
+  },
+  removeMediaButton: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#ef4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  removeMediaButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    lineHeight: 20,
+  },
+  // Video placeholder styles
+  videoPlaceholder: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  videoPlaceholderText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#666',
+    marginBottom: 8,
+  },
+  videoPlaceholderLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+  },
+  videoPlaceholderSubtext: {
+    fontSize: 12,
+    color: '#999',
+    textAlign: 'center',
+  },
+  videoPreviewPlaceholder: {
+    width: 100,
+    height: 100,
+    backgroundColor: '#f0f0f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  videoPreviewLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 4,
   },
 });
