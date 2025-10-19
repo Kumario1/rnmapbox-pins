@@ -22,7 +22,7 @@ import * as ImagePicker from 'expo-image-picker';
 let Video = null;
 try {
   const AV = require('expo-av');
-  Video = AV.Video;
+  Video = AV?.Video || null;
 } catch (error) {
   console.warn('expo-av not available:', error.message);
 }
@@ -43,14 +43,14 @@ export default function MapScreen({ user, onLogout }) {
   const [nearbySpots, setNearbySpots] = useState(new Set());
   const [devMode] = useState(__DEV__); // Development mode for testing
   const [manualTrafficLevel, setManualTrafficLevel] = useState(0);
-  const [newPinData, setNewPinData] = useState({ name: '', description: '', media: [] });
+  const [newPinData, setNewPinData] = useState({ name: '', description: '', photos: [] });
   const [currentZoom, setCurrentZoom] = useState(14);
   const [ratingStatus, setRatingStatus] = useState(null); // 'evaluating', 'success', 'pending', 'error'
   const [heatmapData, setHeatmapData] = useState([]);
   const [isLocationTracking, setIsLocationTracking] = useState(false);
   const [liveTrafficData, setLiveTrafficData] = useState(new Map());
   const [showHeatmap, setShowHeatmap] = useState(true);
-  
+ 
   // Zoom-based UI constants
   const ZOOM_THRESHOLDS = {
     CLOSE_UP: 15,    // Show detailed labels and full pins
@@ -77,7 +77,7 @@ export default function MapScreen({ user, onLogout }) {
   const shouldShowLabels = () => currentZoom >= ZOOM_THRESHOLDS.CLOSE_UP;
   const shouldShowDetailedPins = () => currentZoom >= ZOOM_THRESHOLDS.MEDIUM;
   const shouldShowMinimalPins = () => currentZoom >= ZOOM_THRESHOLDS.FAR_OUT;
-  
+ 
   const getPinSize = () => {
     if (currentZoom >= ZOOM_THRESHOLDS.CLOSE_UP) return { width: 64, height: 64 };
     if (currentZoom >= ZOOM_THRESHOLDS.MEDIUM) return { width: 48, height: 48 };
@@ -93,32 +93,32 @@ export default function MapScreen({ user, onLogout }) {
 
     const clusteredPins = [];
     const processedPins = new Set();
-    
+   
     pins.forEach((pin, index) => {
       if (processedPins.has(index)) return;
-      
+     
       const cluster = [pin];
       processedPins.add(index);
-      
+     
       // Find nearby pins to cluster together
       pins.forEach((otherPin, otherIndex) => {
         if (processedPins.has(otherIndex) || index === otherIndex) return;
-        
+       
         // Simple distance calculation (rough approximation)
         const distance = Math.sqrt(
           Math.pow(pin.coordinates[0] - otherPin.coordinates[0], 2) +
           Math.pow(pin.coordinates[1] - otherPin.coordinates[1], 2)
         );
-        
+       
         // Much smaller threshold - only cluster very close pins
         const threshold = currentZoom >= ZOOM_THRESHOLDS.FAR_OUT ? 0.005 : 0.003;
-        
+       
         if (distance < threshold) {
           cluster.push(otherPin);
           processedPins.add(otherIndex);
         }
       });
-      
+     
       // Create cluster pin
       if (cluster.length === 1) {
         clusteredPins.push(pin);
@@ -135,7 +135,7 @@ export default function MapScreen({ user, onLogout }) {
         clusteredPins.push(clusterPin);
       }
     });
-    
+   
     return clusteredPins;
   };
 
@@ -148,7 +148,7 @@ export default function MapScreen({ user, onLogout }) {
         // Create multiple points for higher user counts to make heatmap more visible
         const points = [];
         const baseIntensity = Math.min(1, userCount / 10); // Scale 0-1 based on user count (max 10 users)
-        
+       
         // Add main point
         points.push({
           type: 'Feature',
@@ -163,7 +163,7 @@ export default function MapScreen({ user, onLogout }) {
             coordinates: spot.coordinates
           }
         });
-        
+       
         // Add additional points around the main spot for higher user counts
         if (userCount > 2) {
           const additionalPoints = Math.min(userCount - 1, 5); // Max 5 additional points
@@ -172,7 +172,7 @@ export default function MapScreen({ user, onLogout }) {
             const distance = 0.0001; // Small offset (~10 meters)
             const offsetLat = Math.cos(angle) * distance;
             const offsetLng = Math.sin(angle) * distance;
-            
+           
             points.push({
               type: 'Feature',
               properties: {
@@ -191,7 +191,7 @@ export default function MapScreen({ user, onLogout }) {
             });
           }
         }
-        
+       
         return points;
       })
       .flat(); // Flatten the array of arrays
@@ -200,10 +200,10 @@ export default function MapScreen({ user, onLogout }) {
   // Development function to simulate user presence at a spot
   const simulateUserPresence = async (spotId, trafficLevel) => {
     if (!devMode) return;
-    
+   
     try {
       console.log(`Setting traffic level ${trafficLevel} for spot ${spotId}`);
-      
+     
       const { data, error } = await supabase
         .from('spot_traffic')
         .upsert({
@@ -225,7 +225,7 @@ export default function MapScreen({ user, onLogout }) {
 
       console.log('✅ Traffic updated successfully in database:', data);
       console.log('📊 Updated record:', data?.[0]);
-      
+     
       // Update the selected pin immediately for better UX
       if (selectedPin && selectedPin.id === spotId) {
         setSelectedPin(prev => ({
@@ -237,14 +237,14 @@ export default function MapScreen({ user, onLogout }) {
       }
 
       // Update pins with new traffic data
-      setPins(prevPins => 
-        prevPins.map(pin => 
-          pin.id === spotId 
+      setPins(prevPins =>
+        prevPins.map(pin =>
+          pin.id === spotId
             ? { ...pin, current_users: trafficLevel, traffic_level: trafficLevel, last_updated: new Date().toISOString() }
             : pin
         )
       );
-      
+     
       console.log(`Successfully simulated ${trafficLevel} users at spot ${spotId}`);
     } catch (error) {
       console.error('Error simulating user presence:', error);
@@ -260,8 +260,49 @@ export default function MapScreen({ user, onLogout }) {
 
   // Fetch skate spots from Supabase
   useEffect(() => {
-    fetchSkateSpots();
+    // Test basic network connectivity first
+    testNetworkConnectivity();
+   
+    // Add a delay to see if it's a timing issue
+    setTimeout(() => {
+      fetchSkateSpots();
+    }, 2000);
   }, []);
+
+  const testNetworkConnectivity = async () => {
+    try {
+      console.log('Testing basic network connectivity...');
+      const response = await fetch('https://httpbin.org/get', {
+        method: 'GET',
+        timeout: 10000,
+      });
+     
+      if (response.ok) {
+        console.log('✅ Basic network connectivity: OK');
+       
+        // Test Supabase URL directly
+        console.log('Testing Supabase URL directly...');
+        const supabaseResponse = await fetch('https://iijsgwiqbemgaugwgrbx.supabase.co/rest/v1/', {
+          method: 'GET',
+          headers: {
+            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlpanNnd2lxYmVtZ2F1Z3dncmJ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA3OTA0NzAsImV4cCI6MjA3NjM2NjQ3MH0.r5xYYjPzZfCvRtVcLHRUfknuzaey1geTx9vQfGX-_cs',
+            'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlpanNnd2lxYmVtZ2F1Z3dncmJ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA3OTA0NzAsImV4cCI6MjA3NjM2NjQ3MH0.r5xYYjPzZfCvRtVcLHRUfknuzaey1geTx9vQfGX-_cs'
+          }
+        });
+       
+        if (supabaseResponse.ok) {
+          console.log('✅ Supabase URL direct access: OK');
+        } else {
+          console.log('❌ Supabase URL direct access: Failed', supabaseResponse.status);
+          console.log('Response headers:', supabaseResponse.headers);
+        }
+      } else {
+        console.log('❌ Basic network connectivity: Failed');
+      }
+    } catch (error) {
+      console.log('❌ Basic network connectivity: Error', error.message);
+    }
+  };
 
   // MVP: Simple location tracking
   useEffect(() => {
@@ -299,62 +340,129 @@ export default function MapScreen({ user, onLogout }) {
     }
   }, [pins]);
 
-  const fetchSkateSpots = async () => {
+  const fetchSkateSpots = async (retryCount = 0) => {
     try {
-      const { data, error } = await supabase
+      console.log(`Attempting to fetch skate spots (attempt ${retryCount + 1})...`);
+     
+      // Test basic connectivity first
+      console.log('Testing Supabase connectivity...');
+      const { data: testData, error: testError } = await supabase
         .from('skate_spots')
-        .select(`
-          *,
-          spot_media!inner(media_url, media_type),
-          skate_spot_ratings!left(
-            smoothness,
-            continuity,
-            debris_risk,
-            crack_coverage,
-            night_visibility,
-            hazard_flag,
-            confidence,
-            notes,
-            skateability_score,
-            created_at
-          ),
-          spot_traffic!left(
-            current_users,
-            peak_users,
-            traffic_level,
-            last_updated
-          )
-        `)
+        .select('id')
+        .limit(1);
+     
+      if (testError) {
+        console.error('Supabase connectivity test failed:', testError);
+        console.error('Test error details:', {
+          message: testError.message,
+          details: testError.details,
+          hint: testError.hint,
+          code: testError.code,
+          status: testError.status,
+          statusText: testError.statusText
+        });
+        throw testError;
+      }
+      console.log('Supabase connectivity test passed');
+     
+      // First, get basic skate spots data
+      const { data: spotsData, error: spotsError } = await supabase
+        .from('skate_spots')
+        .select('*')
         .eq('is_public', true)
         .order('created_at', { ascending: false });
 
-      if (error) {
-        console.error('Error fetching skate spots:', error);
+      if (spotsError) {
+        console.error('Error fetching basic skate spots:', spotsError);
+        console.error('Error details:', {
+          message: spotsError.message,
+          details: spotsError.details,
+          hint: spotsError.hint,
+          code: spotsError.code
+        });
+       
+        // Retry up to 2 times
+        if (retryCount < 2) {
+          console.log(`Retrying in 2 seconds... (${retryCount + 1}/2)`);
+          setTimeout(() => fetchSkateSpots(retryCount + 1), 2000);
+          return;
+        }
+       
+        console.error('Failed to fetch skate spots after 3 attempts');
+       
+        // Fallback: Show some mock data so the app isn't completely broken
+        console.log('Loading fallback mock data...');
+        const mockPins = [
+          {
+            id: 'mock-1',
+            name: 'Mock Skate Spot',
+            description: 'This is mock data - Supabase connection failed',
+            coordinates: [-96.334407, 30.627977], // College Station
+            photos: [],
+            created_at: new Date().toISOString(),
+            created_by: 'mock-user',
+            latestRating: null
+          }
+        ];
+        setPins(mockPins);
+        console.log('Loaded mock pins:', mockPins.length);
         return;
       }
+
+      console.log('Fetched basic skate spots:', spotsData?.length || 0, 'spots');
+
+      // Then get media for each spot
+      const { data: mediaData, error: mediaError } = await supabase
+        .from('spot_media')
+        .select('spot_id, media_url, media_type')
+        .in('spot_id', spotsData?.map(spot => spot.id) || []);
+
+      if (mediaError) {
+        console.error('Error fetching media:', mediaError);
+      }
+
+      // Get ratings for each spot
+      const { data: ratingsData, error: ratingsError } = await supabase
+        .from('skate_spot_ratings')
+        .select('spot_id, smoothness, continuity, debris_risk, crack_coverage, night_visibility, hazard_flag, confidence, notes, skateability_score, created_at')
+        .in('spot_id', spotsData?.map(spot => spot.id) || []);
+
+      if (ratingsError) {
+        console.error('Error fetching ratings:', ratingsError);
+      }
+
+      // Combine the data
+      const data = spotsData?.map(spot => ({
+        ...spot,
+        spot_media: mediaData?.filter(media => media.spot_id === spot.id) || [],
+        skate_spot_ratings: ratingsData?.filter(rating => rating.spot_id === spot.id) || [],
+        spot_traffic: [] // We'll skip traffic for now to simplify
+      })) || [];
+
+      console.log('Combined data for', data?.length || 0, 'spots');
 
       // Transform Supabase data to match our pin format
       const transformedPins = data.map(spot => {
         // Get the latest rating (first one since we ordered by created_at desc)
-        const latestRating = spot.skate_spot_ratings && spot.skate_spot_ratings.length > 0 
-          ? spot.skate_spot_ratings[0] 
+        const latestRating = spot.skate_spot_ratings && spot.skate_spot_ratings.length > 0
+          ? spot.skate_spot_ratings[0]
           : null;
 
         // Get media from spot_media
-        const media = spot.spot_media 
+        const media = spot.spot_media
           ? spot.spot_media.map(media => ({
               url: media.media_url,
               type: media.media_type,
               metadata: media.metadata || {}
             }))
           : [];
-        
+       
         // Get photos for backward compatibility
         const photos = media.filter(m => m.type === 'image').map(m => m.url);
 
         // Get traffic data from spot_traffic relation
-        const trafficData = spot.spot_traffic && spot.spot_traffic.length > 0 
-          ? spot.spot_traffic[0] 
+        const trafficData = spot.spot_traffic && spot.spot_traffic.length > 0
+          ? spot.spot_traffic[0]
           : null;
 
         return {
@@ -380,6 +488,7 @@ export default function MapScreen({ user, onLogout }) {
 
       setPins(transformedPins);
       console.log('Loaded skate spots:', transformedPins.length);
+      console.log('Pin data sample:', transformedPins[0]);
     } catch (error) {
       console.error('Error fetching skate spots:', error);
     }
@@ -392,10 +501,10 @@ export default function MapScreen({ user, onLogout }) {
         console.log('📍 Requesting location permission...');
         const { status } = await Location.requestForegroundPermissionsAsync();
         console.log('📍 Permission status:', status);
-        
+       
         if (status === 'granted') {
           console.log('📍 Getting current position...');
-          const pos = await Location.getCurrentPositionAsync({ 
+          const pos = await Location.getCurrentPositionAsync({
             accuracy: Location.Accuracy.Balanced, // Changed from High to Balanced for better compatibility
             timeout: 15000 // Increased timeout
           });
@@ -472,74 +581,57 @@ export default function MapScreen({ user, onLogout }) {
       Alert.alert('Location Required', 'Please enable location services to add a pin.');
       return;
     }
-    setNewPinData({ name: '', description: '', media: [] });
+    setNewPinData({ name: '', description: '', photos: [] });
     setShowAddModal(true);
   }, [userLocation]);
 
-  const pickMedia = async () => {
+  const pickImage = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Camera roll permission is needed to add media.');
+      Alert.alert('Permission Required', 'Camera roll permission is needed to add photos.');
       return;
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
-      allowsMultipleSelection: true,
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: false,
       quality: 0.7,
     });
 
-    if (!result.canceled && result.assets) {
-      const newMedia = result.assets.map(asset => ({
-        uri: asset.uri,
-        type: asset.type, // 'image' or 'video'
-        filename: asset.fileName || `media_${Date.now()}.${asset.type === 'image' ? 'jpg' : 'mp4'}`,
-        size: asset.fileSize,
-        duration: asset.duration, // for videos
-        width: asset.width,
-        height: asset.height
-      }));
-
+    if (!result.canceled && result.assets[0]) {
       setNewPinData(prev => ({
         ...prev,
-        media: [...prev.media, ...newMedia],
+        photos: [...prev.photos, result.assets[0].uri],
       }));
     }
   };
 
-  const uploadMediaToSupabase = async (mediaItem, spotId) => {
+  const uploadImageToSupabase = async (imageUri, spotId) => {
     try {
-      const fileExtension = mediaItem.type === 'image' ? 'jpg' : 'mp4';
-      const mimeType = mediaItem.type === 'image' ? 'image/jpeg' : 'video/mp4';
-      const filename = `${spotId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}.${fileExtension}`;
-      
-      console.log(`Uploading ${mediaItem.type}:`, mediaItem.uri, 'as', filename);
+      const filename = `${spotId}_${Date.now()}.jpg`;
+      console.log('Uploading image:', imageUri, 'as', filename);
 
-      // For testing in simulator, use real media URLs
-      if (mediaItem.uri.includes('Library/Caches/ImagePicker')) {
-        console.log('Simulator detected - using real media URL');
-        if (mediaItem.type === 'image') {
-          return 'https://drupal-prod.visitcalifornia.com/sites/default/files/styles/fluid_1920/public/VC_Skateparks_MagdalenaEckeYMCA_Supplied_IMG_5676_RT_1280x640.jpg.webp?itok=Q6g-kDMY';
-        } else {
-          return 'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4';
-        }
+      // For testing in simulator, use a real skate park image
+      if (imageUri.includes('Library/Caches/ImagePicker')) {
+        console.log('Simulator detected - using real skate park image');
+        return 'https://drupal-prod.visitcalifornia.com/sites/default/files/styles/fluid_1920/public/VC_Skateparks_MagdalenaEckeYMCA_Supplied_IMG_5676_RT_1280x640.jpg.webp?itok=Q6g-kDMY';
       }
 
       const file = {
-        uri: mediaItem.uri,
-        type: mimeType,
+        uri: imageUri,
+        type: 'image/jpeg',
         name: filename,
       };
 
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('spot-media')
         .upload(filename, file, {
-          contentType: mimeType,
+          contentType: 'image/jpeg',
           upsert: false
         });
 
       if (uploadError) {
-        console.error(`Error uploading ${mediaItem.type}:`, uploadError);
+        console.error('Error uploading image:', uploadError);
         return null;
       }
 
@@ -551,7 +643,7 @@ export default function MapScreen({ user, onLogout }) {
       console.log('Public URL:', publicUrl);
       return publicUrl;
     } catch (error) {
-      console.error(`Error uploading ${mediaItem.type}:`, error);
+      console.error('Error uploading image:', error);
       return null;
     }
   };
@@ -586,32 +678,21 @@ export default function MapScreen({ user, onLogout }) {
         return;
       }
 
-      // Upload media files and get URLs
-      const uploadedMedia = [];
-      for (const mediaItem of newPinData.media) {
-        const mediaUrl = await uploadMediaToSupabase(mediaItem, data.id);
-        if (mediaUrl) {
-          uploadedMedia.push({
-            url: mediaUrl,
-            type: mediaItem.type,
-            duration: mediaItem.duration,
-            width: mediaItem.width,
-            height: mediaItem.height
-          });
-          
+      // Upload images and get URLs
+      const uploadedPhotos = [];
+      for (const photoUri of newPinData.photos) {
+        const imageUrl = await uploadImageToSupabase(photoUri, data.id);
+        if (imageUrl) {
+          uploadedPhotos.push(imageUrl);
+         
           // Save media reference to database
           await supabase
             .from('spot_media')
             .insert({
               spot_id: data.id,
-              media_url: mediaUrl,
-              media_type: mediaItem.type,
-              uploaded_by: user?.id,
-              metadata: {
-                duration: mediaItem.duration,
-                width: mediaItem.width,
-                height: mediaItem.height
-              }
+              media_url: imageUrl,
+              media_type: 'image',
+              uploaded_by: user?.id
             });
         }
       }
@@ -622,8 +703,7 @@ export default function MapScreen({ user, onLogout }) {
         coordinates: [data.longitude, data.latitude],
         name: data.name,
         description: data.description,
-        media: uploadedMedia,
-        photos: uploadedMedia.filter(m => m.type === 'image').map(m => m.url), // Backward compatibility
+        photos: uploadedPhotos,
         created_at: data.created_at,
         created_by: data.created_by,
         address: data.address,
@@ -635,15 +715,14 @@ export default function MapScreen({ user, onLogout }) {
       // Add to local state
       setPins(prev => [...prev, newPin]);
       setShowAddModal(false);
-      
-      // Trigger AI evaluation if we have images
-      const firstImage = uploadedMedia.find(m => m.type === 'image');
-      if (firstImage) {
+     
+      // Trigger AI evaluation if we have photos
+      if (uploadedPhotos.length > 0) {
         setRatingStatus('evaluating');
-        
+       
         const aiResult = await evaluateSpot({
           spotId: data.id,
-          imageUrl: firstImage.url,
+          imageUrl: uploadedPhotos[0], // Use first photo
           userId: user?.id
         });
 
@@ -653,26 +732,26 @@ export default function MapScreen({ user, onLogout }) {
           if (aiResult.pending) {
             setRatingStatus('pending');
             Alert.alert(
-              'AI Review Pending', 
+              'AI Review Pending',
               'Your spot has been added! AI analysis is pending review and will be available soon.'
             );
           } else if (aiResult.rating) {
             setRatingStatus('success');
             // Update the pin with the rating
-            setPins(prev => prev.map(pin => 
-              pin.id === data.id 
+            setPins(prev => prev.map(pin =>
+              pin.id === data.id
                 ? { ...pin, latestRating: aiResult.rating }
                 : pin
             ));
             Alert.alert(
-              'AI Analysis Complete', 
+              'AI Analysis Complete',
               'Your spot has been analyzed! Check the details to see the AI rating.'
             );
           }
         } else {
           setRatingStatus('error');
           Alert.alert(
-            'AI Analysis Failed', 
+            'AI Analysis Failed',
             'Your spot was added successfully, but AI analysis failed. You can try again later.'
           );
         }
@@ -681,9 +760,9 @@ export default function MapScreen({ user, onLogout }) {
       }
 
       // Reset form
-      setNewPinData({ name: '', description: '', media: [] });
+      setNewPinData({ name: '', description: '', photos: [] });
       setRatingStatus(null);
-      
+     
     } catch (error) {
       console.error('Error saving pin:', error);
       Alert.alert('Error', 'Failed to save pin. Please try again.');
@@ -692,16 +771,31 @@ export default function MapScreen({ user, onLogout }) {
   }, [newPinData, userLocation, user]);
 
   const handleReEvaluate = async (pin) => {
-    const firstImage = pin.media?.find(m => m.type === 'image') || pin.photos?.[0];
+    const firstImage = pin.photos?.[0];
     if (!firstImage) {
       Alert.alert('No Images', 'This spot needs at least one image for AI analysis.');
+      return;
+    }
+   
+    // Validate that we have a proper image URL
+    const imageUrl = typeof firstImage === 'string' ? firstImage : firstImage.url;
+    const isImageUrl = imageUrl && (
+      imageUrl.includes('.jpg') ||
+      imageUrl.includes('.jpeg') ||
+      imageUrl.includes('.png') ||
+      imageUrl.includes('.webp') ||
+      imageUrl.includes('supabase.co/storage') ||
+      imageUrl.includes('unsplash.com') ||
+      imageUrl.includes('drupal-prod.visitcalifornia.com')
+    );
+   
+    if (!isImageUrl) {
+      Alert.alert('Invalid Image', 'The image URL for this spot is not valid for AI analysis.');
       return;
     }
 
     try {
       setRatingStatus('evaluating');
-      
-      const imageUrl = typeof firstImage === 'string' ? firstImage : firstImage.url;
       const aiResult = await reEvaluateSpot({
         spotId: pin.id,
         imageUrl: imageUrl,
@@ -717,8 +811,8 @@ export default function MapScreen({ user, onLogout }) {
         } else if (aiResult.rating) {
           setRatingStatus('success');
           // Update the pin with the new rating
-          setPins(prev => prev.map(p => 
-            p.id === pin.id 
+          setPins(prev => prev.map(p =>
+            p.id === pin.id
               ? { ...p, latestRating: aiResult.rating }
               : p
           ));
@@ -791,8 +885,8 @@ export default function MapScreen({ user, onLogout }) {
 
   return (
     <View style={styles.container}>
-      <MapboxGL.MapView 
-        style={styles.map} 
+      <MapboxGL.MapView
+        style={styles.map}
         styleURL="mapbox://styles/mapbox/dark-v11"
         onMapIdle={onMapIdle}
         onCameraChanged={onCameraChanged}
@@ -801,7 +895,7 @@ export default function MapScreen({ user, onLogout }) {
         compassEnabled={false}
       >
         <MapboxGL.Camera ref={cameraRef} zoomLevel={14} centerCoordinate={center} />
-        
+       
         {/* User location pin - always visible when location is available */}
         {userLocation && (
           <MapboxGL.MarkerView
@@ -829,7 +923,7 @@ export default function MapScreen({ user, onLogout }) {
             </View>
           </MapboxGL.MarkerView>
         )}
-        
+       
         {/* Debug: Show user location status */}
         {devMode && (
           <View style={styles.debugLocationInfo}>
@@ -841,7 +935,7 @@ export default function MapScreen({ user, onLogout }) {
             </Text>
           </View>
         )}
-        
+       
         {/* MVP: Improved Heatmap Layer */}
         {showHeatmap && heatmapData.length > 0 && (
           <MapboxGL.ShapeSource
@@ -906,10 +1000,10 @@ export default function MapScreen({ user, onLogout }) {
           const showLabels = shouldShowLabels();
           const showDetailed = shouldShowDetailedPins();
           const showMinimal = shouldShowMinimalPins();
-          
+         
           // Don't render pins if zoomed out too far
           if (!showMinimal) return null;
-          
+         
           return (
             <MapboxGL.MarkerView
               key={pin.id}
@@ -942,8 +1036,8 @@ export default function MapScreen({ user, onLogout }) {
                         styles.markerLabelText,
                         { fontSize: showDetailed ? 12 : 10 }
                       ]}>
-                        {pin.clusterSize && pin.clusterSize > 1 
-                          ? `${pin.clusterSize} spots` 
+                        {pin.clusterSize && pin.clusterSize > 1
+                          ? `${pin.clusterSize} spots`
                           : pin.name
                         }
                       </Text>
@@ -954,7 +1048,7 @@ export default function MapScreen({ user, onLogout }) {
                    {(pin.current_users || 0) > 0 && showDetailed && (
                      <View style={[
                        styles.trafficIndicator,
-                       { 
+                       {
                          backgroundColor: getTrafficColor(pin.traffic_level || 0),
                          borderWidth: (pin.current_users || 0) > 5 ? 3 : 2,
                          borderColor: '#fff',
@@ -970,7 +1064,7 @@ export default function MapScreen({ user, onLogout }) {
                      ]}>
                        <Text style={[
                          styles.trafficIndicatorText,
-                         { 
+                         {
                            fontSize: showDetailed ? ((pin.current_users || 0) > 9 ? 8 : 10) : 8,
                            fontWeight: (pin.current_users || 0) > 5 ? '900' : 'bold'
                          }
@@ -1039,7 +1133,7 @@ export default function MapScreen({ user, onLogout }) {
                         {pin.clusterSize && pin.clusterSize > 1 ? (
                           <Text style={[
                             styles.snapmapPinText,
-                            { 
+                            {
                               fontSize: pinSize.width > 40 ? 12 : 10,
                               color: '#fff',
                               fontWeight: '800'
@@ -1053,7 +1147,7 @@ export default function MapScreen({ user, onLogout }) {
                             {(pin.current_users || 0) > 0 && !showDetailed && (
                               <Text style={[
                                 styles.snapmapPinText,
-                                { 
+                                {
                                   fontSize: pinSize.width > 40 ? 12 : 10,
                                   color: '#fff',
                                   fontWeight: '800'
@@ -1084,9 +1178,9 @@ export default function MapScreen({ user, onLogout }) {
       </MapboxGL.MapView>
 
       {/* Profile Button */}
-      <TouchableOpacity 
-        onPress={() => setShowProfileMenu(!showProfileMenu)} 
-        style={styles.profileButton} 
+      <TouchableOpacity
+        onPress={() => setShowProfileMenu(!showProfileMenu)}
+        style={styles.profileButton}
         activeOpacity={0.8}
       >
         <View style={styles.profileAvatar}>
@@ -1106,10 +1200,10 @@ export default function MapScreen({ user, onLogout }) {
               <Text style={styles.dropdownUserEmail}>{user?.email || ''}</Text>
             </View>
           </View>
-          
+         
           <View style={styles.dropdownDivider} />
-          
-          <TouchableOpacity 
+         
+          <TouchableOpacity
             style={styles.dropdownItem}
             onPress={() => {
               setShowProfileMenu(false);
@@ -1121,8 +1215,8 @@ export default function MapScreen({ user, onLogout }) {
             <Text style={styles.dropdownItemText}>Settings</Text>
             <Ionicons name="chevron-forward" size={16} color="#8e8e93" />
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+         
+          <TouchableOpacity
             style={styles.dropdownItem}
             onPress={() => {
               setShowProfileMenu(false);
@@ -1130,7 +1224,7 @@ export default function MapScreen({ user, onLogout }) {
               const userCount = pins.reduce((sum, pin) => sum + (pin.current_users || 0), 0);
               const activeSpots = pins.filter(pin => (pin.current_users || 0) > 0).length;
               Alert.alert(
-                'Live Traffic Status', 
+                'Live Traffic Status',
                 `Location Tracking: ${status}\nTotal Users: ${userCount}\nActive Spots: ${activeSpots}`
               );
             }}
@@ -1140,15 +1234,15 @@ export default function MapScreen({ user, onLogout }) {
             <Text style={styles.dropdownItemText}>Live Traffic Status</Text>
             <View style={[styles.statusIndicator, { backgroundColor: isLocationTracking ? '#10b981' : '#ef4444' }]} />
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+         
+          <TouchableOpacity
             style={styles.dropdownItem}
             onPress={async () => {
               setShowProfileMenu(false);
               try {
                 const { status } = await Location.requestForegroundPermissionsAsync();
                 if (status === 'granted') {
-                  const pos = await Location.getCurrentPositionAsync({ 
+                  const pos = await Location.getCurrentPositionAsync({
                     accuracy: Location.Accuracy.Balanced,
                     timeout: 15000
                   });
@@ -1170,8 +1264,8 @@ export default function MapScreen({ user, onLogout }) {
             <Text style={styles.dropdownItemText}>Update My Location</Text>
             <Ionicons name="chevron-forward" size={16} color="#8e8e93" />
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+         
+          <TouchableOpacity
             style={styles.dropdownItem}
             onPress={() => {
               setShowProfileMenu(false);
@@ -1181,10 +1275,10 @@ export default function MapScreen({ user, onLogout }) {
           >
             <Text style={styles.dropdownItemText}>Edit Profile</Text>
           </TouchableOpacity>
-          
+         
           <View style={styles.dropdownDivider} />
-          
-          <TouchableOpacity 
+         
+          <TouchableOpacity
             style={[styles.dropdownItem, styles.dropdownItemDanger]}
             onPress={() => {
               setShowProfileMenu(false);
@@ -1195,14 +1289,14 @@ export default function MapScreen({ user, onLogout }) {
             <Text style={styles.dropdownItemIcon}>→</Text>
             <Text style={[styles.dropdownItemText, styles.dropdownItemTextDanger]}>Log Out</Text>
           </TouchableOpacity>
-          
+         
           {/* MVP: Simple dev controls */}
           {devMode && (
             <>
               <View style={styles.dropdownDivider} />
               <View style={styles.devMenuSection}>
                 <Text style={styles.devMenuTitle}>Development Tools</Text>
-                
+               
                 <View style={styles.devButtonGrid}>
                   <TouchableOpacity
                     style={[styles.devTestButton, styles.devButtonPrimary]}
@@ -1212,11 +1306,11 @@ export default function MapScreen({ user, onLogout }) {
                         // Add random users to database for random spots
                         const spotsToUpdate = pins.filter(() => Math.random() > 0.3); // 70% chance each spot gets users
                         const updates = [];
-                        
+                       
                         for (const spot of spotsToUpdate) {
                           const userCount = Math.floor(Math.random() * 8) + 1; // 1-8 users
                           const trafficLevel = Math.min(5, Math.ceil(userCount / 2));
-                          
+                         
                           // Update database
                           const { data, error } = await supabase
                             .from('spot_traffic')
@@ -1230,7 +1324,7 @@ export default function MapScreen({ user, onLogout }) {
                               onConflict: 'spot_id'
                             })
                             .select();
-                          
+                         
                           if (!error) {
                             updates.push({ spotId: spot.id, userCount, trafficLevel });
                             console.log(`✅ Added ${userCount} users to spot ${spot.id} in database`);
@@ -1239,9 +1333,9 @@ export default function MapScreen({ user, onLogout }) {
                             console.error(`❌ Failed to add users to spot ${spot.id}:`, error);
                           }
                         }
-                        
+                       
                         // Update local state
-                        setPins(prevPins => 
+                        setPins(prevPins =>
                           prevPins.map(pin => {
                             const update = updates.find(u => u.spotId === pin.id);
                             if (update) {
@@ -1255,7 +1349,7 @@ export default function MapScreen({ user, onLogout }) {
                             return pin;
                           })
                         );
-                        
+                       
                         Alert.alert('Success', `Added random traffic to ${updates.length} spots!`);
                       } catch (error) {
                         console.error('Error adding realistic traffic:', error);
@@ -1266,7 +1360,7 @@ export default function MapScreen({ user, onLogout }) {
                     <Ionicons name="shuffle" size={16} color="#3b82f6" style={styles.devButtonIcon} />
                     <Text style={styles.devTestButtonText}>Random Traffic</Text>
                   </TouchableOpacity>
-                  
+                 
                   <TouchableOpacity
                     style={[styles.devTestButton, styles.devButtonSecondary]}
                     onPress={() => {
@@ -1282,7 +1376,7 @@ export default function MapScreen({ user, onLogout }) {
                     <Ionicons name="location" size={16} color="#6b7280" style={styles.devButtonIcon} />
                     <Text style={styles.devTestButtonText}>Test Location</Text>
                   </TouchableOpacity>
-                  
+                 
                   <TouchableOpacity
                     style={[styles.devTestButton, styles.devButtonDanger]}
                     onPress={async () => {
@@ -1293,10 +1387,10 @@ export default function MapScreen({ user, onLogout }) {
                           .from('spot_traffic')
                           .delete()
                           .neq('spot_id', '00000000-0000-0000-0000-000000000000'); // Delete all records
-                        
+                       
                         if (!error) {
                           // Reset all pins to no traffic
-                          setPins(prevPins => 
+                          setPins(prevPins =>
                             prevPins.map(pin => ({
                               ...pin,
                               current_users: 0,
@@ -1328,15 +1422,15 @@ export default function MapScreen({ user, onLogout }) {
 
       {/* Overlay to close dropdown */}
       {showProfileMenu && (
-        <TouchableOpacity 
-          style={styles.dropdownOverlay} 
+        <TouchableOpacity
+          style={styles.dropdownOverlay}
           activeOpacity={1}
           onPress={() => setShowProfileMenu(false)}
         />
       )}
 
       {/* Heatmap Toggle - Above Zoom Controls */}
-      <TouchableOpacity 
+      <TouchableOpacity
         style={styles.heatmapToggle}
         onPress={() => {
           console.log('Heatmap toggle pressed:', {
@@ -1348,10 +1442,10 @@ export default function MapScreen({ user, onLogout }) {
         }}
         activeOpacity={0.8}
       >
-        <Ionicons 
-          name="flame" 
-          size={24} 
-          color={showHeatmap ? '#ff6b35' : '#fff'} 
+        <Ionicons
+          name="flame"
+          size={24}
+          color={showHeatmap ? '#ff6b35' : '#fff'}
         />
       </TouchableOpacity>
 
@@ -1361,9 +1455,9 @@ export default function MapScreen({ user, onLogout }) {
           <TouchableOpacity style={styles.neonButton} onPress={zoomIn} activeOpacity={0.7}>
             <Text style={styles.neonButtonText}>+</Text>
           </TouchableOpacity>
-          
+         
           <View style={styles.neonDivider} />
-          
+         
           <TouchableOpacity style={styles.neonButton} onPress={zoomOut} activeOpacity={0.7}>
             <Text style={styles.neonButtonText}>−</Text>
           </TouchableOpacity>
@@ -1407,45 +1501,13 @@ export default function MapScreen({ user, onLogout }) {
                 numberOfLines={4}
               />
 
-              <Text style={styles.label}>Media (Photos & Videos)</Text>
+              <Text style={styles.label}>Photos</Text>
               <ScrollView horizontal style={styles.photoScroll}>
-                {newPinData.media.map((mediaItem, idx) => (
-                  <View key={idx} style={styles.mediaPreview}>
-                    {mediaItem.type === 'image' ? (
-                      <Image source={{ uri: mediaItem.uri }} style={styles.photoPreview} />
-                    ) : Video ? (
-                      <View style={styles.videoPreview}>
-                        <Video
-                          source={{ uri: mediaItem.uri }}
-                          style={styles.photoPreview}
-                          shouldPlay={false}
-                          useNativeControls={false}
-                        />
-                        <View style={styles.videoPreviewOverlay}>
-                          <Text style={styles.videoPreviewIcon}>VID</Text>
-                        </View>
-                      </View>
-                    ) : (
-                      <View style={styles.videoPreviewPlaceholder}>
-                        <Text style={styles.videoPreviewIcon}>VID</Text>
-                        <Text style={styles.videoPreviewLabel}>Video</Text>
-                      </View>
-                    )}
-                    <TouchableOpacity
-                      style={styles.removeMediaButton}
-                      onPress={() => {
-                        setNewPinData(prev => ({
-                          ...prev,
-                          media: prev.media.filter((_, index) => index !== idx)
-                        }));
-                      }}
-                    >
-                      <Text style={styles.removeMediaButtonText}>×</Text>
-                    </TouchableOpacity>
-                  </View>
+                {newPinData.photos.map((uri, idx) => (
+                  <Image key={idx} source={{ uri }} style={styles.photoPreview} />
                 ))}
-                <TouchableOpacity onPress={pickMedia} style={styles.addPhotoButton}>
-                  <Text style={styles.addPhotoText}>+ Add Media</Text>
+                <TouchableOpacity onPress={pickImage} style={styles.addPhotoButton}>
+                  <Text style={styles.addPhotoText}>+ Add Photo</Text>
                 </TouchableOpacity>
               </ScrollView>
             </ScrollView>
@@ -1475,7 +1537,7 @@ export default function MapScreen({ user, onLogout }) {
                   </View>
                 )}
               </View>
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => setShowDetailsModal(false)}
                 style={styles.closeButtonContainer}
                 activeOpacity={0.7}
@@ -1485,12 +1547,18 @@ export default function MapScreen({ user, onLogout }) {
             </View>
 
             <ScrollView style={styles.modalBody}>
-              <MediaGallery media={selectedPin?.media} />
+              {selectedPin?.photos && selectedPin.photos.length > 0 && (
+                <ScrollView horizontal pagingEnabled style={styles.photoPager}>
+                  {selectedPin.photos.map((uri, idx) => (
+                    <Image key={idx} source={{ uri }} style={styles.detailPhoto} />
+                  ))}
+                </ScrollView>
+              )}
 
               {/* Basic Information Section */}
               <View style={styles.infoSection}>
                 <Text style={styles.sectionTitle}>Spot Information</Text>
-                
+               
                 {selectedPin?.address && (
                   <View style={styles.infoRow}>
                     <Text style={styles.infoLabel}>Address</Text>
@@ -1556,7 +1624,7 @@ export default function MapScreen({ user, onLogout }) {
                     </View>
                   </View>
                 </View>
-                
+               
                 {/* Development mode traffic controls */}
                 {devMode && selectedPin && (
                   <View style={styles.devControls}>
@@ -1567,7 +1635,7 @@ export default function MapScreen({ user, onLogout }) {
                           key={level}
                           style={[
                             styles.trafficButton,
-                            { 
+                            {
                               backgroundColor: getTrafficColor(level),
                               borderColor: selectedPin?.traffic_level === level ? '#fff' : 'rgba(255, 255, 255, 0.3)',
                               borderWidth: selectedPin?.traffic_level === level ? 2 : 1,
@@ -1580,15 +1648,15 @@ export default function MapScreen({ user, onLogout }) {
                           activeOpacity={0.7}
                         >
                           {level === 0 ? (
-                            <Ionicons 
-                              name="close" 
-                              size={16} 
-                              color="#fff" 
+                            <Ionicons
+                              name="close"
+                              size={16}
+                              color="#fff"
                             />
                           ) : (
                             <Text style={[
                               styles.trafficButtonText,
-                              { 
+                              {
                                 color: '#fff',
                                 fontWeight: selectedPin?.traffic_level === level ? '800' : '600',
                                 fontSize: selectedPin?.traffic_level === level ? 14 : 12,
@@ -1618,7 +1686,7 @@ export default function MapScreen({ user, onLogout }) {
               {selectedPin?.latestRating ? (
                 <View style={styles.ratingSection}>
                   <Text style={styles.sectionTitle}>AI Analysis</Text>
-                  
+                 
                   {/* Hazard Warning */}
                   {selectedPin.latestRating.hazard_flag && (
                     <View style={styles.hazardWarning}>
@@ -1687,8 +1755,8 @@ export default function MapScreen({ user, onLogout }) {
               {__DEV__ && (selectedPin?.media?.find(m => m.type === 'image') || selectedPin?.photos?.length > 0) && (
                 <View style={styles.devControlsSection}>
                   <Text style={styles.devControlsLabel}>Developer Controls</Text>
-                  <TouchableOpacity 
-                    onPress={() => handleReEvaluate(selectedPin)} 
+                  <TouchableOpacity
+                    onPress={() => handleReEvaluate(selectedPin)}
                     style={[
                       styles.reEvaluateButton,
                       ratingStatus === 'evaluating' && styles.reEvaluateButtonDisabled
@@ -1696,11 +1764,11 @@ export default function MapScreen({ user, onLogout }) {
                     disabled={ratingStatus === 'evaluating'}
                     activeOpacity={0.8}
                   >
-                    <Ionicons 
-                      name={ratingStatus === 'evaluating' ? 'hourglass' : 'refresh'} 
-                      size={16} 
-                      color="#fff" 
-                      style={styles.reEvaluateButtonIcon} 
+                    <Ionicons
+                      name={ratingStatus === 'evaluating' ? 'hourglass' : 'refresh'}
+                      size={16}
+                      color="#fff"
+                      style={styles.reEvaluateButtonIcon}
                     />
                     <Text style={styles.reEvaluateButtonText}>
                       {ratingStatus === 'evaluating' ? 'Evaluating...' : 'Re-evaluate with AI'}
@@ -1732,8 +1800,8 @@ export default function MapScreen({ user, onLogout }) {
             </ScrollView>
 
             <View style={styles.modalFooter}>
-              <TouchableOpacity 
-                onPress={() => setShowDetailsModal(false)} 
+              <TouchableOpacity
+                onPress={() => setShowDetailsModal(false)}
                 style={styles.closeDetailsButton}
                 activeOpacity={0.8}
               >
