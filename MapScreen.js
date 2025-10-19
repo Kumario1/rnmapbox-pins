@@ -18,6 +18,7 @@ import Constants from 'expo-constants';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from './supabase';
+import { evaluateSpot, reEvaluateSpot } from './lib/ratings';
 
 export default function MapScreen({ user, onLogout }) {
   const [pins, setPins] = useState([]);
@@ -29,6 +30,7 @@ export default function MapScreen({ user, onLogout }) {
   const [selectedPin, setSelectedPin] = useState(null);
   const [newPinData, setNewPinData] = useState({ name: '', description: '', photos: [] });
   const [currentZoom, setCurrentZoom] = useState(14);
+  const [ratingStatus, setRatingStatus] = useState(null); // 'evaluating', 'success', 'pending', 'error'
   const cameraRef = useRef(null);
   const token = Constants?.expoConfig?.extra?.MAPBOX_PUBLIC_TOKEN || Constants?.manifest?.extra?.MAPBOX_PUBLIC_TOKEN;
 
@@ -47,7 +49,21 @@ export default function MapScreen({ user, onLogout }) {
     try {
       const { data, error } = await supabase
         .from('skate_spots')
-        .select('*')
+        .select(`
+          *,
+          spot_media!inner(media_url, media_type),
+          skate_spot_ratings!left(
+            smoothness,
+            continuity,
+            debris_risk,
+            crack_coverage,
+            night_visibility,
+            hazard_flag,
+            confidence,
+            notes,
+            created_at
+          )
+        `)
         .eq('is_public', true)
         .order('created_at', { ascending: false });
 
@@ -57,18 +73,31 @@ export default function MapScreen({ user, onLogout }) {
       }
 
       // Transform Supabase data to match our pin format
-      const transformedPins = data.map(spot => ({
-        id: spot.id,
-        name: spot.name,
-        description: spot.description,
-        coordinates: [spot.longitude, spot.latitude],
-        address: spot.address,
-        spot_type: spot.spot_type,
-        difficulty_level: spot.difficulty_level,
-        photos: [], // We'll add photos later
-        created_at: spot.created_at,
-        created_by: spot.created_by
-      }));
+      const transformedPins = data.map(spot => {
+        // Get the latest rating (first one since we ordered by created_at desc)
+        const latestRating = spot.skate_spot_ratings && spot.skate_spot_ratings.length > 0 
+          ? spot.skate_spot_ratings[0] 
+          : null;
+
+        // Get photos from spot_media
+        const photos = spot.spot_media 
+          ? spot.spot_media.filter(media => media.media_type === 'image').map(media => media.media_url)
+          : [];
+
+        return {
+          id: spot.id,
+          name: spot.name,
+          description: spot.description,
+          coordinates: [spot.longitude, spot.latitude],
+          address: spot.address,
+          spot_type: spot.spot_type,
+          difficulty_level: spot.difficulty_level,
+          photos: photos,
+          created_at: spot.created_at,
+          created_by: spot.created_by,
+          latestRating: latestRating
+        };
+      });
 
       setPins(transformedPins);
       console.log('Loaded skate spots:', transformedPins.length);
@@ -166,6 +195,48 @@ export default function MapScreen({ user, onLogout }) {
     }
   };
 
+  const uploadImageToSupabase = async (imageUri, spotId) => {
+    try {
+      const filename = `${spotId}_${Date.now()}.jpg`;
+      console.log('Uploading image:', imageUri, 'as', filename);
+
+      // For testing in simulator, use a real skate park image
+      if (imageUri.includes('Library/Caches/ImagePicker')) {
+        console.log('Simulator detected - using real skate park image');
+        return 'https://drupal-prod.visitcalifornia.com/sites/default/files/styles/fluid_1920/public/VC_Skateparks_MagdalenaEckeYMCA_Supplied_IMG_5676_RT_1280x640.jpg.webp?itok=Q6g-kDMY';
+      }
+
+      const file = {
+        uri: imageUri,
+        type: 'image/jpeg',
+        name: filename,
+      };
+
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('spot-media')
+        .upload(filename, file, {
+          contentType: 'image/jpeg',
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error('Error uploading image:', uploadError);
+        return null;
+      }
+
+      console.log('Upload successful:', uploadData);
+      const { data: { publicUrl } } = supabase.storage
+        .from('spot-media')
+        .getPublicUrl(filename);
+
+      console.log('Public URL:', publicUrl);
+      return publicUrl;
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      return null;
+    }
+  };
+
   const savePin = useCallback(async () => {
     if (!newPinData.name.trim()) {
       Alert.alert('Name Required', 'Please enter a name for this pin.');
@@ -196,30 +267,145 @@ export default function MapScreen({ user, onLogout }) {
         return;
       }
 
+      // Upload images and get URLs
+      const uploadedPhotos = [];
+      for (const photoUri of newPinData.photos) {
+        const imageUrl = await uploadImageToSupabase(photoUri, data.id);
+        if (imageUrl) {
+          uploadedPhotos.push(imageUrl);
+          
+          // Save media reference to database
+          await supabase
+            .from('spot_media')
+            .insert({
+              spot_id: data.id,
+              media_url: imageUrl,
+              media_type: 'image',
+              uploaded_by: user?.id
+            });
+        }
+      }
+
       // Transform the saved data to match our pin format
       const newPin = {
         id: data.id,
         coordinates: [data.longitude, data.latitude],
         name: data.name,
         description: data.description,
-        photos: [], // We'll handle photos separately
+        photos: uploadedPhotos,
         created_at: data.created_at,
         created_by: data.created_by,
         address: data.address,
         spot_type: data.spot_type,
-        difficulty_level: data.difficulty_level
+        difficulty_level: data.difficulty_level,
+        latestRating: null
       };
 
       // Add to local state
       setPins(prev => [...prev, newPin]);
       setShowAddModal(false);
       
-      Alert.alert('Success', 'Pin added successfully!');
+      // Trigger AI evaluation if we have photos
+      if (uploadedPhotos.length > 0) {
+        setRatingStatus('evaluating');
+        
+        const aiResult = await evaluateSpot({
+          spotId: data.id,
+          imageUrl: uploadedPhotos[0], // Use first photo
+          userId: user?.id
+        });
+
+        console.log('AI evaluation result:', aiResult);
+
+        if (aiResult.success) {
+          if (aiResult.pending) {
+            setRatingStatus('pending');
+            Alert.alert(
+              'AI Review Pending', 
+              'Your spot has been added! AI analysis is pending review and will be available soon.'
+            );
+          } else if (aiResult.rating) {
+            setRatingStatus('success');
+            // Update the pin with the rating
+            setPins(prev => prev.map(pin => 
+              pin.id === data.id 
+                ? { ...pin, latestRating: aiResult.rating }
+                : pin
+            ));
+            Alert.alert(
+              'AI Analysis Complete', 
+              'Your spot has been analyzed! Check the details to see the AI rating.'
+            );
+          }
+        } else {
+          setRatingStatus('error');
+          Alert.alert(
+            'AI Analysis Failed', 
+            'Your spot was added successfully, but AI analysis failed. You can try again later.'
+          );
+        }
+      } else {
+        Alert.alert('Success', 'Pin added successfully!');
+      }
+
+      // Reset form
+      setNewPinData({ name: '', description: '', photos: [] });
+      setRatingStatus(null);
+      
     } catch (error) {
       console.error('Error saving pin:', error);
       Alert.alert('Error', 'Failed to save pin. Please try again.');
+      setRatingStatus(null);
     }
   }, [newPinData, userLocation, user]);
+
+  const handleReEvaluate = async (pin) => {
+    if (!pin.photos || pin.photos.length === 0) {
+      Alert.alert('No Photos', 'This spot needs at least one photo for AI analysis.');
+      return;
+    }
+
+    try {
+      setRatingStatus('evaluating');
+      
+      const aiResult = await reEvaluateSpot({
+        spotId: pin.id,
+        imageUrl: pin.photos[0],
+        userId: user?.id
+      });
+
+      console.log('Re-evaluation result:', aiResult);
+
+      if (aiResult.success) {
+        if (aiResult.pending) {
+          setRatingStatus('pending');
+          Alert.alert('Re-evaluation Pending', 'AI analysis is pending review.');
+        } else if (aiResult.rating) {
+          setRatingStatus('success');
+          // Update the pin with the new rating
+          setPins(prev => prev.map(p => 
+            p.id === pin.id 
+              ? { ...p, latestRating: aiResult.rating }
+              : p
+          ));
+          // Update selected pin if it's the same one
+          if (selectedPin?.id === pin.id) {
+            setSelectedPin(prev => ({ ...prev, latestRating: aiResult.rating }));
+          }
+          Alert.alert('Re-evaluation Complete', 'AI analysis has been updated!');
+        }
+      } else {
+        setRatingStatus('error');
+        Alert.alert('Re-evaluation Failed', aiResult.error || 'Failed to re-evaluate spot.');
+      }
+    } catch (error) {
+      console.error('Error re-evaluating spot:', error);
+      setRatingStatus('error');
+      Alert.alert('Error', 'Failed to re-evaluate spot. Please try again.');
+    } finally {
+      setRatingStatus(null);
+    }
+  };
 
   const geojson = {
     type: 'FeatureCollection',
@@ -490,8 +676,83 @@ export default function MapScreen({ user, onLogout }) {
                 </>
               ) : null}
 
+              {/* AI Rating Section */}
+              {selectedPin?.latestRating ? (
+                <View style={styles.ratingSection}>
+                  <Text style={styles.label}>AI Analysis</Text>
+                  
+                  {/* Hazard Warning */}
+                  {selectedPin.latestRating.hazard_flag && (
+                    <View style={styles.hazardWarning}>
+                      <Text style={styles.hazardText}>⚠️ HAZARD DETECTED</Text>
+                      <Text style={styles.hazardSubtext}>This spot may contain dangerous elements</Text>
+                    </View>
+                  )}
+
+                  {/* Rating Grid */}
+                  <View style={styles.ratingGrid}>
+                    <View style={styles.ratingItem}>
+                      <Text style={styles.ratingLabel}>Smoothness</Text>
+                      <Text style={styles.ratingValue}>{selectedPin.latestRating.smoothness}/5</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <Text style={styles.ratingLabel}>Continuity</Text>
+                      <Text style={styles.ratingValue}>{selectedPin.latestRating.continuity}/5</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <Text style={styles.ratingLabel}>Debris Risk</Text>
+                      <Text style={styles.ratingValue}>{selectedPin.latestRating.debris_risk}/5</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <Text style={styles.ratingLabel}>Crack Coverage</Text>
+                      <Text style={styles.ratingValue}>{selectedPin.latestRating.crack_coverage}/5</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <Text style={styles.ratingLabel}>Night Visibility</Text>
+                      <Text style={styles.ratingValue}>{selectedPin.latestRating.night_visibility}/5</Text>
+                    </View>
+                    <View style={styles.ratingItem}>
+                      <Text style={styles.ratingLabel}>Confidence</Text>
+                      <Text style={styles.ratingValue}>{Math.round(selectedPin.latestRating.confidence * 100)}%</Text>
+                    </View>
+                  </View>
+
+                  {selectedPin.latestRating.notes && (
+                    <View style={styles.notesSection}>
+                      <Text style={styles.notesLabel}>AI Notes</Text>
+                      <Text style={styles.notesText}>{selectedPin.latestRating.notes}</Text>
+                    </View>
+                  )}
+
+                  <Text style={styles.ratingTimestamp}>
+                    Analyzed: {new Date(selectedPin.latestRating.created_at).toLocaleString()}
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.noRatingSection}>
+                  <Text style={styles.noRatingText}>No AI analysis available</Text>
+                  <Text style={styles.noRatingSubtext}>Add a photo to get AI-powered spot analysis</Text>
+                </View>
+              )}
+
+              {/* Developer Controls */}
+              {__DEV__ && selectedPin?.photos && selectedPin.photos.length > 0 && (
+                <View style={styles.devControlsSection}>
+                  <Text style={styles.devControlsLabel}>Developer Controls</Text>
+                  <TouchableOpacity 
+                    onPress={() => handleReEvaluate(selectedPin)} 
+                    style={styles.reEvaluateButton}
+                    disabled={ratingStatus === 'evaluating'}
+                  >
+                    <Text style={styles.reEvaluateButtonText}>
+                      {ratingStatus === 'evaluating' ? 'Evaluating...' : 'Re-evaluate with AI'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
               <Text style={styles.metaText}>
-                Added: {selectedPin?.createdAt ? new Date(selectedPin.createdAt).toLocaleDateString() : ''}
+                Added: {selectedPin?.created_at ? new Date(selectedPin.created_at).toLocaleDateString() : ''}
               </Text>
             </ScrollView>
 
@@ -812,5 +1073,131 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#fff',
+  },
+  // AI Rating Styles
+  ratingSection: {
+    marginTop: 16,
+    padding: 16,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  hazardWarning: {
+    backgroundColor: '#fff3cd',
+    borderColor: '#ffeaa7',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  hazardText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#856404',
+    textAlign: 'center',
+  },
+  hazardSubtext: {
+    fontSize: 14,
+    color: '#856404',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  ratingGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  ratingItem: {
+    flex: 1,
+    minWidth: '45%',
+    backgroundColor: '#fff',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    alignItems: 'center',
+  },
+  ratingLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  ratingValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1c1c1e',
+  },
+  notesSection: {
+    marginTop: 16,
+    padding: 12,
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+  },
+  notesLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#333',
+    marginBottom: 8,
+  },
+  notesText: {
+    fontSize: 14,
+    color: '#666',
+    lineHeight: 20,
+  },
+  ratingTimestamp: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 12,
+    textAlign: 'center',
+  },
+  noRatingSection: {
+    marginTop: 16,
+    padding: 20,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e9ecef',
+    alignItems: 'center',
+  },
+  noRatingText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 4,
+  },
+  noRatingSubtext: {
+    fontSize: 14,
+    color: '#999',
+    textAlign: 'center',
+  },
+  // Developer Controls Styles
+  devControlsSection: {
+    marginTop: 16,
+    padding: 16,
+    backgroundColor: '#e3f2fd',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#bbdefb',
+  },
+  devControlsLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1976d2',
+    marginBottom: 12,
+  },
+  reEvaluateButton: {
+    backgroundColor: '#1976d2',
+    padding: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  reEvaluateButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
