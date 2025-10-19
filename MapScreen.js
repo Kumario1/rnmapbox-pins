@@ -459,11 +459,13 @@ export default function MapScreen({ user, onLogout }) {
                     <View style={styles.markerPointer} />
                   </>
                 ) : (
-                  <Image
-                    source={defaultPinIcon}
-                    style={styles.defaultMarkerIcon}
-                    resizeMode="contain"
-                  />
+                  <View style={styles.silhouettePinContainer}>
+                    <Image
+                      source={defaultPinIcon}
+                      style={styles.defaultMarkerIcon}
+                      resizeMode="contain"
+                    />
+                  </View>
                 )}
               </View>
             </TouchableOpacity>
@@ -544,14 +546,19 @@ export default function MapScreen({ user, onLogout }) {
         />
       )}
 
-      {/* Zoom Controls */}
+      {/* Neon Zoom Controls */}
       <View style={styles.zoomControls}>
-        <TouchableOpacity style={styles.zoomButton} onPress={zoomIn} activeOpacity={0.7}>
-          <Text style={styles.zoomButtonText}>+</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.zoomButton} onPress={zoomOut} activeOpacity={0.7}>
-          <Text style={styles.zoomButtonText}>−</Text>
-        </TouchableOpacity>
+        <View style={styles.neonContainer}>
+          <TouchableOpacity style={styles.neonButton} onPress={zoomIn} activeOpacity={0.7}>
+            <Text style={styles.neonButtonText}>+</Text>
+          </TouchableOpacity>
+          
+          <View style={styles.neonDivider} />
+          
+          <TouchableOpacity style={styles.neonButton} onPress={zoomOut} activeOpacity={0.7}>
+            <Text style={styles.neonButtonText}>−</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       <TouchableOpacity onPress={openAddPinModal} style={styles.fab} activeOpacity={0.8}>
@@ -857,6 +864,56 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     backgroundColor: 'transparent',
   },
+  neonContainer: {
+    backgroundColor: 'rgba(10, 10, 15, 0.7)',
+    borderRadius: 35,
+    borderWidth: 2.5,
+    borderColor: '#ffffff',
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    shadowColor: '#ffffff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.7,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  neonButton: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+  },
+  neonButtonText: {
+    color: '#ffffff',
+    fontSize: 24,
+    fontWeight: '300',
+    textShadowColor: '#ffffff',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
+  },
+  neonDivider: {
+    height: 1.5,
+    backgroundColor: '#ffffff',
+    marginVertical: 8,
+    marginHorizontal: 8,
+    shadowColor: '#ffffff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.5,
+    shadowRadius: 3,
+  },
+  neonCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 3,
+    borderColor: '#ffffff',
+    backgroundColor: 'transparent',
+    shadowColor: '#ffffff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.8,
+    shadowRadius: 6,
+  },
   zoomButton: {
     width: 48,
     height: 48,
@@ -882,18 +939,18 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 16,
     bottom: 24,
-    backgroundColor: '#1c1c1e',
+    backgroundColor: 'rgba(10, 10, 15, 0.7)',
     width: 56,
     height: 56,
     borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 6,
-    borderWidth: 3,
+    shadowColor: '#ffffff',
+    shadowOpacity: 0.7,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
+    borderWidth: 2.5,
     borderColor: '#fff',
   },
   fabText: {
@@ -901,6 +958,9 @@ const styles = StyleSheet.create({
     fontSize: 28,
     lineHeight: 32,
     fontWeight: '600',
+    textShadowColor: '#ffffff',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
   },
   modalOverlay: {
     flex: 1,
@@ -1202,10 +1262,17 @@ const styles = StyleSheet.create({
     borderTopColor: '#fff',
     marginTop: -1,
   },
+  silhouettePinContainer: {
+    marginTop: 4,
+  },
   defaultMarkerIcon: {
     width: 35,
     height: 42,
-    marginTop: 4,
+    tintColor: 'rgba(255, 255, 255, 0.9)',
+    shadowColor: '#ffffff',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
   },
   markerLabel: {
     marginBottom: 5,
