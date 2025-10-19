@@ -407,24 +407,7 @@ export default function MapScreen({ user, onLogout }) {
     }
   };
 
-  const geojson = {
-    type: 'FeatureCollection',
-    features: pins.map(pin => ({
-      type: 'Feature',
-      id: pin.id,
-      properties: { 
-        id: pin.id, 
-        name: pin.name,
-        thumbnail: pin.photos && pin.photos.length > 0 ? pin.photos[0] : null
-      },
-      geometry: {
-        type: 'Point',
-        coordinates: pin.coordinates,
-      },
-    })),
-  };
-
-  const redPinIcon = require('./assets/better-pin.png');
+  const defaultPinIcon = require('./assets/better-pin.png');
 
   return (
     <View style={styles.container}>
@@ -440,70 +423,52 @@ export default function MapScreen({ user, onLogout }) {
           <MapboxGL.UserLocation visible={true} showsUserHeadingIndicator={true} />
         )}
         
-        <MapboxGL.Images images={{ redPin: redPinIcon }} />
-        
-        {/* Pins with dynamic zoom-based sizing and enhanced styling */}
-        <MapboxGL.ShapeSource id="pins" shape={geojson} onPress={onPinPress}>
-          {/* Icon glow layer (rendered first for halo effect) */}
-          <MapboxGL.CircleLayer
-            id="pinGlow"
-            style={{
-              circleRadius: [
-                'interpolate',
-                ['exponential', 1.5],
-                ['zoom'],
-                10, 20,
-                14, 30,
-                18, 45
-              ],
-              circleColor: '#ff3b30',
-              circleOpacity: 0.2,
-              circleBlur: 1,
-            }}
-          />
-          
-          {/* Main pin icon */}
-          <MapboxGL.SymbolLayer
-            id="pinLayer"
-            style={{
-              iconImage: 'redPin',
-              iconSize: [
-                'interpolate',
-                ['exponential', 1.5],
-                ['zoom'],
-                10, 0.8,
-                12, 1.2,
-                14, 1.6,
-                16, 2.0,
-                18, 2.5,
-                20, 3.0
-              ],
-              iconAllowOverlap: true,
-              iconAnchor: 'bottom',
-              iconPitchAlignment: 'viewport',
-              iconRotationAlignment: 'viewport',
-              iconOpacity: 0.95,
-              symbolZOrder: 'source',
-              textField: ['get', 'name'],
-              textSize: [
-                'interpolate',
-                ['linear'],
-                ['zoom'],
-                10, 16,
-                14, 22,
-                18, 28
-              ],
-              textOffset: [0, -3.8],
-              textColor: '#ffffff',
-              textHaloColor: '#000000',
-              textHaloWidth: 2.5,
-              textHaloBlur: 0.5,
-              textAllowOverlap: false,
-              textOptional: true,
-              textFont: ['Open Sans Bold', 'Arial Unicode MS Bold'],
-            }}
-          />
-        </MapboxGL.ShapeSource>
+        {/* Custom image thumbnail pins */}
+        {pins.map((pin) => (
+          <MapboxGL.MarkerView
+            key={pin.id}
+            id={String(pin.id)}
+            coordinate={pin.coordinates}
+            allowOverlap={true}
+            allowOverlapWithPuck={true}
+            isSelected={false}
+          >
+            <TouchableOpacity
+              onPress={() => {
+                setSelectedPin(pin);
+                setShowDetailsModal(true);
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.markerContainer}>
+                {/* Spot name label - now above */}
+                <View style={styles.markerLabel}>
+                  <Text style={styles.markerLabelText}>
+                    {pin.name}
+                  </Text>
+                </View>
+                {pin.photos && pin.photos.length > 0 ? (
+                  <>
+                    <View style={styles.markerImageContainer}>
+                      <Image
+                        source={{ uri: pin.photos[0] }}
+                        style={styles.markerImage}
+                        resizeMode="cover"
+                      />
+                    </View>
+                    <View style={styles.markerPointer} />
+                  </>
+                ) : (
+                  <Image
+                    source={defaultPinIcon}
+                    style={styles.defaultMarkerIcon}
+                    resizeMode="contain"
+                  />
+                )}
+              </View>
+            </TouchableOpacity>
+          </MapboxGL.MarkerView>
+        ))}
       </MapboxGL.MapView>
 
       {/* Profile Button */}
@@ -1199,5 +1164,70 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  // Custom Marker Styles
+  markerContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  markerImageContainer: {
+    borderRadius: 8,
+    borderWidth: 2.5,
+    borderColor: '#fff',
+    padding: 1.5,
+    backgroundColor: '#000',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 6,
+  },
+  markerImage: {
+    width: 50,
+    height: 50,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: '#000',
+  },
+  markerPointer: {
+    width: 0,
+    height: 0,
+    backgroundColor: 'transparent',
+    borderStyle: 'solid',
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 10,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#fff',
+    marginTop: -1,
+  },
+  defaultMarkerIcon: {
+    width: 35,
+    height: 42,
+    marginTop: 4,
+  },
+  markerLabel: {
+    marginBottom: 5,
+    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
+    minWidth: 60,
+    maxWidth: 150,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.3,
+    shadowRadius: 2,
+    elevation: 3,
+  },
+  markerLabelText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
+    flexWrap: 'wrap',
   },
 });
