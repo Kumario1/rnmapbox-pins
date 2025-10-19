@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, ActivityIndicator } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from './supabase';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import LoginScreen from './LoginScreen';
 import MapScreen from './MapScreen';
 
@@ -18,6 +19,7 @@ export default function App() {
     // Listen for authentication state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        console.log('Auth state change:', event, session?.user?.email);
         if (event === 'SIGNED_IN' && session?.user) {
           const userData = {
             id: session.user.id,
@@ -26,9 +28,8 @@ export default function App() {
             avatar_url: session.user.user_metadata?.avatar_url,
           };
           await handleLoginSuccess(userData);
-        } else if (event === 'SIGNED_OUT') {
-          await handleLogout();
         }
+        // Note: We don't handle SIGNED_OUT here anymore since handleLogout does it directly
       }
     );
 
@@ -80,17 +81,33 @@ export default function App() {
 
   const handleLogout = async () => {
     try {
+      console.log('Starting logout process...');
+      
+      // Sign out from Google Sign-In first
+      try {
+        await GoogleSignin.signOut();
+        console.log('Google Sign-In signed out successfully');
+      } catch (googleError) {
+        console.log('Google Sign-In sign out error:', googleError);
+      }
+      
       // Sign out from Supabase
       const { error } = await supabase.auth.signOut();
       if (error) {
         console.log('Supabase sign out error:', error);
       }
       
-      // Clear local storage
-      await AsyncStorage.removeItem(USER_KEY);
+      // Always clear the user state and storage to ensure UI updates
+      console.log('Clearing user state...');
       setUser(null);
+      await AsyncStorage.removeItem(USER_KEY);
+      
+      console.log('Logout completed successfully - UI should update now');
     } catch (error) {
       console.log('Error logging out:', error);
+      // Ensure UI updates even if there's an error
+      setUser(null);
+      await AsyncStorage.removeItem(USER_KEY);
     }
   };
 

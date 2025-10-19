@@ -11,7 +11,7 @@ import {
   SafeAreaView,
   ScrollView,
 } from 'react-native';
-import { signInWithGoogle, signInWithApple } from './supabase';
+import { signInWithGoogle } from './supabase';
 
 export default function LoginScreen({ onLoginSuccess }) {
   const [email, setEmail] = useState('');
@@ -57,8 +57,6 @@ export default function LoginScreen({ onLoginSuccess }) {
       
       if (provider === 'Google') {
         result = await signInWithGoogle();
-      } else if (provider === 'Apple') {
-        result = await signInWithApple();
       }
       
       if (result.error) {
@@ -86,76 +84,67 @@ export default function LoginScreen({ onLoginSuccess }) {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.content}>
-        <View style={styles.header}>
-          <Text style={styles.logo}>🛹</Text>
-          <Text style={styles.title}>Skate Spots</Text>
-          <Text style={styles.subtitle}>Discover and share the best spots</Text>
-        </View>
+            <View style={styles.header}>
+              <Text style={styles.logo}>🛹</Text>
+              <Text style={styles.title}>Skate Spots</Text>
+              <Text style={styles.subtitle}>Discover and share the best spots</Text>
+            </View>
 
-        <View style={styles.form}>
-          <TextInput
-            style={styles.input}
-            placeholder="Email"
-            placeholderTextColor="#999"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoComplete="email"
-          />
+            <View style={styles.form}>
+              <TextInput
+                style={styles.input}
+                placeholder="Email"
+                placeholderTextColor="#999"
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoComplete="email"
+              />
 
-          <TextInput
-            style={styles.input}
-            placeholder="Password"
-            placeholderTextColor="#999"
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoComplete="password"
-          />
+              <TextInput
+                style={styles.input}
+                placeholder="Password"
+                placeholderTextColor="#999"
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+                autoComplete="password"
+              />
 
-          <TouchableOpacity
-            style={styles.primaryButton}
-            onPress={isSignUp ? handleSignUp : handleLogin}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.primaryButtonText}>
-              {isSignUp ? 'Sign Up' : 'Log In'}
-            </Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.primaryButton}
+                onPress={isSignUp ? handleSignUp : handleLogin}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {isSignUp ? 'Sign Up' : 'Log In'}
+                </Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity onPress={() => setIsSignUp(!isSignUp)}>
-            <Text style={styles.switchText}>
-              {isSignUp ? 'Already have an account? Log In' : "Don't have an account? Sign Up"}
-            </Text>
-          </TouchableOpacity>
-        </View>
+              <TouchableOpacity onPress={() => setIsSignUp(!isSignUp)}>
+                <Text style={styles.switchText}>
+                  {isSignUp ? 'Already have an account? Log In' : "Don't have an account? Sign Up"}
+                </Text>
+              </TouchableOpacity>
+            </View>
 
-        <View style={styles.divider}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>OR</Text>
-          <View style={styles.dividerLine} />
-        </View>
+            <View style={styles.divider}>
+              <View style={styles.dividerLine} />
+              <Text style={styles.dividerText}>OR</Text>
+              <View style={styles.dividerLine} />
+            </View>
 
-        <View style={styles.oauthButtons}>
-          <TouchableOpacity
-            style={styles.oauthButton}
-            onPress={() => handleOAuthLogin('Google')}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.oauthIcon}>G</Text>
-            <Text style={styles.oauthButtonText}>Continue with Google</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.oauthButton}
-            onPress={() => handleOAuthLogin('Apple')}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.oauthIcon}></Text>
-            <Text style={styles.oauthButtonText}>Continue with Apple</Text>
-          </TouchableOpacity>
-        </View>
+            <View style={styles.oauthButtons}>
+              <TouchableOpacity
+                style={styles.oauthButton}
+                onPress={() => handleOAuthLogin('Google')}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.oauthIcon}>G</Text>
+                <Text style={styles.oauthButtonText}>Continue with Google</Text>
+              </TouchableOpacity>
+            </View>
 
             <Text style={styles.demoHint}>
               Demo: demo@skate.com / password123
@@ -178,10 +167,9 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    minHeight: '100%',
+    paddingVertical: 20,
   },
   content: {
-    flex: 1,
     padding: 24,
     justifyContent: 'center',
   },

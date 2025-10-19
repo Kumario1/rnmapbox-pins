@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Constants from 'expo-constants';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
+import { supabase } from './supabase';
 
 export default function MapScreen({ user, onLogout }) {
   const [pins, setPins] = useState([]);
@@ -27,6 +28,7 @@ export default function MapScreen({ user, onLogout }) {
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [selectedPin, setSelectedPin] = useState(null);
   const [newPinData, setNewPinData] = useState({ name: '', description: '', photos: [] });
+  const [currentZoom, setCurrentZoom] = useState(14);
   const cameraRef = useRef(null);
   const token = Constants?.expoConfig?.extra?.MAPBOX_PUBLIC_TOKEN || Constants?.manifest?.extra?.MAPBOX_PUBLIC_TOKEN;
 
@@ -35,6 +37,45 @@ export default function MapScreen({ user, onLogout }) {
       MapboxGL.setAccessToken(token);
     }
   }, [token]);
+
+  // Fetch skate spots from Supabase
+  useEffect(() => {
+    fetchSkateSpots();
+  }, []);
+
+  const fetchSkateSpots = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('skate_spots')
+        .select('*')
+        .eq('is_public', true)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching skate spots:', error);
+        return;
+      }
+
+      // Transform Supabase data to match our pin format
+      const transformedPins = data.map(spot => ({
+        id: spot.id,
+        name: spot.name,
+        description: spot.description,
+        coordinates: [spot.longitude, spot.latitude],
+        address: spot.address,
+        spot_type: spot.spot_type,
+        difficulty_level: spot.difficulty_level,
+        photos: [], // We'll add photos later
+        created_at: spot.created_at,
+        created_by: spot.created_by
+      }));
+
+      setPins(transformedPins);
+      console.log('Loaded skate spots:', transformedPins.length);
+    } catch (error) {
+      console.error('Error fetching skate spots:', error);
+    }
+  };
 
   // Request location permission and get user location on startup
   useEffect(() => {
@@ -52,6 +93,27 @@ export default function MapScreen({ user, onLogout }) {
       }
     })();
   }, []);
+
+  // Zoom control functions
+  const zoomIn = () => {
+    const newZoom = Math.min(currentZoom + 1, 20);
+    setCurrentZoom(newZoom);
+    cameraRef.current?.setCamera({
+      centerCoordinate: center,
+      zoomLevel: newZoom,
+      animationDuration: 300,
+    });
+  };
+
+  const zoomOut = () => {
+    const newZoom = Math.max(currentZoom - 1, 1);
+    setCurrentZoom(newZoom);
+    cameraRef.current?.setCamera({
+      centerCoordinate: center,
+      zoomLevel: newZoom,
+      animationDuration: 300,
+    });
+  };
 
   const onMapIdle = useCallback(async () => {
     try {
@@ -104,31 +166,71 @@ export default function MapScreen({ user, onLogout }) {
     }
   };
 
-  const savePin = useCallback(() => {
+  const savePin = useCallback(async () => {
     if (!newPinData.name.trim()) {
       Alert.alert('Name Required', 'Please enter a name for this pin.');
       return;
     }
 
-    const newPin = {
-      id: Date.now().toString(),
-      coordinates: userLocation,
-      name: newPinData.name,
-      description: newPinData.description,
-      photos: newPinData.photos,
-      createdAt: new Date().toISOString(),
-    };
+    try {
+      // Save to Supabase
+      const { data, error } = await supabase
+        .from('skate_spots')
+        .insert({
+          name: newPinData.name,
+          description: newPinData.description,
+          latitude: userLocation[1], // userLocation is [lng, lat]
+          longitude: userLocation[0],
+          spot_type: 'street', // Default type
+          difficulty_level: 3, // Default difficulty
+          is_public: true,
+          is_verified: false,
+          created_by: user?.id
+        })
+        .select()
+        .single();
 
-    setPins(prev => [...prev, newPin]);
-    setShowAddModal(false);
-  }, [newPinData, userLocation]);
+      if (error) {
+        console.error('Error saving pin:', error);
+        Alert.alert('Error', 'Failed to save pin. Please try again.');
+        return;
+      }
+
+      // Transform the saved data to match our pin format
+      const newPin = {
+        id: data.id,
+        coordinates: [data.longitude, data.latitude],
+        name: data.name,
+        description: data.description,
+        photos: [], // We'll handle photos separately
+        created_at: data.created_at,
+        created_by: data.created_by,
+        address: data.address,
+        spot_type: data.spot_type,
+        difficulty_level: data.difficulty_level
+      };
+
+      // Add to local state
+      setPins(prev => [...prev, newPin]);
+      setShowAddModal(false);
+      
+      Alert.alert('Success', 'Pin added successfully!');
+    } catch (error) {
+      console.error('Error saving pin:', error);
+      Alert.alert('Error', 'Failed to save pin. Please try again.');
+    }
+  }, [newPinData, userLocation, user]);
 
   const geojson = {
     type: 'FeatureCollection',
     features: pins.map(pin => ({
       type: 'Feature',
       id: pin.id,
-      properties: { id: pin.id, name: pin.name },
+      properties: { 
+        id: pin.id, 
+        name: pin.name,
+        thumbnail: pin.photos && pin.photos.length > 0 ? pin.photos[0] : null
+      },
       geometry: {
         type: 'Point',
         coordinates: pin.coordinates,
@@ -164,9 +266,9 @@ export default function MapScreen({ user, onLogout }) {
                 'interpolate',
                 ['exponential', 1.5],
                 ['zoom'],
-                10, 12,
-                14, 18,
-                18, 28
+                10, 20,
+                14, 30,
+                18, 45
               ],
               circleColor: '#ff3b30',
               circleOpacity: 0.2,
@@ -183,12 +285,12 @@ export default function MapScreen({ user, onLogout }) {
                 'interpolate',
                 ['exponential', 1.5],
                 ['zoom'],
-                10, 0.28,
-                12, 0.38,
-                14, 0.5,
-                16, 0.65,
-                18, 0.85,
-                20, 1.1
+                10, 0.8,
+                12, 1.2,
+                14, 1.6,
+                16, 2.0,
+                18, 2.5,
+                20, 3.0
               ],
               iconAllowOverlap: true,
               iconAnchor: 'bottom',
@@ -201,9 +303,9 @@ export default function MapScreen({ user, onLogout }) {
                 'interpolate',
                 ['linear'],
                 ['zoom'],
-                10, 11,
-                14, 16,
-                18, 22
+                10, 16,
+                14, 22,
+                18, 28
               ],
               textOffset: [0, -3.8],
               textColor: '#ffffff',
@@ -291,8 +393,18 @@ export default function MapScreen({ user, onLogout }) {
         />
       )}
 
+      {/* Zoom Controls */}
+      <View style={styles.zoomControls}>
+        <TouchableOpacity style={styles.zoomButton} onPress={zoomIn} activeOpacity={0.7}>
+          <Text style={styles.zoomButtonText}>+</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.zoomButton} onPress={zoomOut} activeOpacity={0.7}>
+          <Text style={styles.zoomButtonText}>−</Text>
+        </TouchableOpacity>
+      </View>
+
       <TouchableOpacity onPress={openAddPinModal} style={styles.fab} activeOpacity={0.8}>
-        <Text style={styles.fabText}>+</Text>
+        <Text style={styles.fabText}>📍</Text>
       </TouchableOpacity>
 
       {/* Add Pin Modal */}
@@ -512,6 +624,34 @@ const styles = StyleSheet.create({
   dropdownItemTextDanger: {
     color: '#ff3b30',
   },
+  zoomControls: {
+    position: 'absolute',
+    bottom: 100,
+    right: 20,
+    flexDirection: 'column',
+    backgroundColor: 'transparent',
+  },
+  zoomButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#1c1c1e',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 6,
+    borderWidth: 2,
+    borderColor: '#fff',
+  },
+  zoomButtonText: {
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '600',
+  },
   fab: {
     position: 'absolute',
     right: 16,
@@ -523,10 +663,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 6,
+    borderWidth: 3,
+    borderColor: '#fff',
   },
   fabText: {
     color: '#fff',
